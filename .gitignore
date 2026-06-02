@@ -1,0 +1,12 @@
+*.~* 
+__history/ 
+*.dcu 
+*.local 
+*.identcache 
+*.exe 
+*.bat 
+*.dll 
+*.map 
+*.tds 
+*.dsk 
+.DS_Store 
