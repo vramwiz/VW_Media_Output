@@ -7,6 +7,7 @@ uses
 
 type
   LPCWSTR = PWideChar;
+  PProjectFile = Pointer;
 
 const
   OUTPUT_INFO_FLAG_VIDEO = 1;
@@ -35,6 +36,8 @@ type
 const
   OUTPUT_PLUGIN_FLAG_VIDEO = 1;
   OUTPUT_PLUGIN_FLAG_AUDIO = 2;
+  OUTPUT_PLUGIN_FLAG_IMAGE = 4;
+  OUTPUT_PLUGIN_FLAG_PROJECT_CONFIG = 8;
 
 type
   POutputPluginTable = ^TOutputPluginTable;
@@ -46,6 +49,8 @@ type
     func_output: function(oip: POutputInfo): Boolean; cdecl;
     func_config: function(hwnd: HWND; hinst: HINST): Boolean; cdecl;
     func_get_config_text: function: LPCWSTR; cdecl;
+    func_load_project_config: function(project: PProjectFile): Boolean; cdecl;
+    func_save_project_config: function(project: PProjectFile): Boolean; cdecl;
   end;
 
 implementation

@@ -6,7 +6,7 @@ type
   TOutputEncoderKind = (oekCpuX264, oekIntelQsv);
   TOutputPixelFormatKind = (opfYuv420p, opfNv12);
   TOutputVideoQualityKind = (ovqHigh, ovqStandard, ovqFast);
-  TOutputAudioModeKind = (oamAac192, oamAac128, oamNone);
+  TOutputAudioModeKind = (oamAac576, oamAac384, oamAac256, oamAac192, oamAac128, oamNone);
 
   TOutputEncoderInfo = record
     Kind: TOutputEncoderKind;
@@ -51,7 +51,7 @@ type
 const
   OUTPUT_ENCODER_COUNT = 2;
   OUTPUT_VIDEO_QUALITY_COUNT = 3;
-  OUTPUT_AUDIO_MODE_COUNT = 3;
+  OUTPUT_AUDIO_MODE_COUNT = 6;
 
 function OutputEncoderInfo(Index: Integer): TOutputEncoderInfo;
 function OutputEncoderInfoByKind(Kind: TOutputEncoderKind): TOutputEncoderInfo;
@@ -173,6 +173,12 @@ end;
 function OutputAudioModeName(Mode: TOutputAudioModeKind): string;
 begin
   case Mode of
+    oamAac576:
+      Result := 'AAC 576 kbps';
+    oamAac384:
+      Result := 'AAC 384 kbps';
+    oamAac256:
+      Result := 'AAC 256 kbps';
     oamAac192:
       Result := 'AAC 192 kbps';
     oamAac128:
@@ -193,10 +199,16 @@ function OutputAudioModeByIndex(Index: Integer): TOutputAudioModeKind;
 begin
   case Index of
     0:
-      Result := oamAac192;
+      Result := oamAac576;
     1:
-      Result := oamAac128;
+      Result := oamAac384;
     2:
+      Result := oamAac256;
+    3:
+      Result := oamAac192;
+    4:
+      Result := oamAac128;
+    5:
       Result := oamNone;
   else
     Result := oamAac192;
@@ -219,11 +231,11 @@ function OutputPixelFormatDescription(Format: TOutputPixelFormatKind): string;
 begin
   case Format of
     opfYuv420p:
-      Result := 'BGRA raw input -> yuv420p';
+      Result := 'source input -> yuv420p';
     opfNv12:
-      Result := 'BGRA raw input -> nv12';
+      Result := 'source input -> nv12';
   else
-    Result := 'BGRA raw input';
+    Result := 'source input';
   end;
 end;
 
@@ -278,6 +290,27 @@ begin
   Settings.Audio.SampleRate := AUDIO_OUTPUT_SAMPLE_RATE;
   Settings.Audio.Channels := AUDIO_OUTPUT_CHANNELS;
   case Mode of
+    oamAac576:
+      begin
+        Settings.Audio.Enabled := True;
+        Settings.Audio.CodecName := 'AAC';
+        Settings.Audio.EncoderName := 'aac';
+        Settings.Audio.BitRate := 576000;
+      end;
+    oamAac384:
+      begin
+        Settings.Audio.Enabled := True;
+        Settings.Audio.CodecName := 'AAC';
+        Settings.Audio.EncoderName := 'aac';
+        Settings.Audio.BitRate := 384000;
+      end;
+    oamAac256:
+      begin
+        Settings.Audio.Enabled := True;
+        Settings.Audio.CodecName := 'AAC';
+        Settings.Audio.EncoderName := 'aac';
+        Settings.Audio.BitRate := 256000;
+      end;
     oamAac192:
       begin
         Settings.Audio.Enabled := True;

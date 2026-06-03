@@ -3,17 +3,12 @@ unit FFmpegOutputEncoder;
 interface
 
 uses
-  System.SysUtils, System.Math, AviUtl2OutputTypes, FFmpegDecoderTypes,
-  FFmpegOutputConfig;
+  System.SysUtils, System.Math, AviUtl2OutputTypes, FFmpegOutputConfig;
 
 type
   TOutputProgressEvent = procedure(Current, Total: Integer; CurrentFps,
     AverageFps, MinFps, MaxFps: Double) of object;
 
-function ExportVideoWithOutputCallbacks(const SourceFileName: string;
-  const Settings: TOutputTestSettings;
-  const SourceInfo: TVideoInfo; OnProgress: TOutputProgressEvent;
-  out ErrorMessage: string): Boolean;
 function ExportOutputInfo(oip: POutputInfo; const Settings: TOutputTestSettings;
   out ErrorMessage: string): Boolean;
 procedure RequestOutputAbort;
@@ -21,11 +16,13 @@ procedure RequestOutputAbort;
 implementation
 
 uses
-  Winapi.Windows, System.Classes, System.Diagnostics, FFmpegApi, FFmpegDecoder;
+  Winapi.Windows, System.Classes, System.Diagnostics, FFmpegApi,
+  FFmpegOutputPerfLog, FFmpegOutputVideoInput;
 
 const
-  OUTPUT_VIDEO_FORMAT_RGB24 = 0;
   OUTPUT_TEST_FORMAT_PCM16 = 1;
+  OUTPUT_VIDEO_BUFFER_COUNT = 16;
+  OUTPUT_AUDIO_BUFFER_COUNT = 16;
   AUDIO_ENCODER_FRAME_SAMPLES = 1024;
   AV_SAMPLE_FMT_FLTP = 8;
 
@@ -151,34 +148,6 @@ type
     alpha_mode: Integer;
   end;
 
-  TOutputVideoProvider = class
-  private
-    FDecoder: TFFmpegDecoder;
-    FInfo: TVideoInfo;
-    FBuffer: TBytes;
-    FNextSequentialFrame: Integer;
-    FLastError: string;
-  public
-    constructor Create(const SourceFileName: string; const SourceInfo: TVideoInfo);
-    destructor Destroy; override;
-    function GetVideo(Frame: Integer; Format: DWORD): Pointer;
-    property LastError: string read FLastError;
-  end;
-
-  TOutputAudioProvider = class
-  private
-    FDecoder: TFFmpegDecoder;
-    FCache: TBytes;
-    FSampleCount: Integer;
-    FFinished: Boolean;
-    FLastError: string;
-  public
-    constructor Create(const SourceFileName: string);
-    destructor Destroy; override;
-    function GetAudio(Start, Length: Integer; Readed: PInteger; Format: DWORD): Pointer;
-    property LastError: string read FLastError;
-  end;
-
   Tav_opt_set_int = function(obj: Pointer; name: PAnsiChar; val: Int64;
     search_flags: Integer): Integer; cdecl;
   Tav_opt_set_sample_fmt = function(obj: Pointer; name: PAnsiChar;
@@ -187,8 +156,6 @@ type
     const layout: PAVChannelLayout; search_flags: Integer): Integer; cdecl;
 
 var
-  CurrentProvider: TOutputVideoProvider;
-  CurrentAudioProvider: TOutputAudioProvider;
   CurrentAborted: Boolean;
   avformat_alloc_output_context2: Tavformat_alloc_output_context2;
   avformat_new_stream: Tavformat_new_stream;
@@ -246,145 +213,6 @@ begin
   av_opt_set_chlayout := Tav_opt_set_chlayout(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_opt_set_chlayout'));
 
   OutputApiLoaded := True;
-end;
-
-constructor TOutputVideoProvider.Create(const SourceFileName: string; const SourceInfo: TVideoInfo);
-var
-  OpenInfo: TVideoInfo;
-begin
-  inherited Create;
-  FInfo := SourceInfo;
-  FDecoder := TFFmpegDecoder.Create;
-  if not FDecoder.Open(SourceFileName, OpenInfo, FLastError) then
-    raise Exception.Create('Failed to open source for output: ' + FLastError);
-  SetLength(FBuffer, FInfo.Width * FInfo.Height * 4);
-  FNextSequentialFrame := 0;
-end;
-
-destructor TOutputVideoProvider.Destroy;
-begin
-  FDecoder.Free;
-  inherited Destroy;
-end;
-
-function TOutputVideoProvider.GetVideo(Frame: Integer; Format: DWORD): Pointer;
-var
-  PositionMs: Integer;
-  DecodedPositionMs: Integer;
-begin
-  Result := nil;
-  FLastError := '';
-  if (Frame < 0) or (Length(FBuffer) = 0) then
-    Exit;
-  if Format <> OUTPUT_VIDEO_FORMAT_RGB24 then
-  begin
-    FLastError := 'Unsupported output test video format.';
-    Exit;
-  end;
-
-  if Frame = FNextSequentialFrame then
-  begin
-    if not FDecoder.DecodeNextFrameToBgrx32(@FBuffer[0], FInfo.Width * 4,
-      DecodedPositionMs, FLastError) then
-      Exit;
-    Inc(FNextSequentialFrame);
-  end
-  else
-  begin
-    PositionMs := Round(Frame * 1000.0 / FInfo.Fps);
-    if not FDecoder.DecodeFrameToBgrx32(PositionMs, @FBuffer[0], FInfo.Width * 4, FLastError) then
-      Exit;
-    FNextSequentialFrame := Frame + 1;
-  end;
-  Result := @FBuffer[0];
-end;
-
-constructor TOutputAudioProvider.Create(const SourceFileName: string);
-var
-  OpenInfo: TVideoInfo;
-begin
-  inherited Create;
-  FDecoder := TFFmpegDecoder.Create;
-  if not FDecoder.Open(SourceFileName, OpenInfo, FLastError) then
-    raise Exception.Create('Failed to open source audio for output: ' + FLastError);
-  if not OpenInfo.Audio.Present then
-  begin
-    FLastError := 'Source has no audio stream.';
-    Exit;
-  end;
-end;
-
-destructor TOutputAudioProvider.Destroy;
-begin
-  FDecoder.Free;
-  inherited Destroy;
-end;
-
-function TOutputAudioProvider.GetAudio(Start, Length: Integer; Readed: PInteger;
-  Format: DWORD): Pointer;
-var
-  TargetSampleCount: Integer;
-begin
-  Result := nil;
-  FLastError := '';
-  if Readed <> nil then
-    Readed^ := 0;
-
-  if (FDecoder = nil) or (Length <= 0) or (Start < 0) then
-    Exit;
-  if Format <> OUTPUT_TEST_FORMAT_PCM16 then
-  begin
-    FLastError := 'Unsupported output test audio format.';
-    Exit;
-  end;
-
-  TargetSampleCount := Start + Length;
-  if (not FFinished) and (FSampleCount < TargetSampleCount) then
-  begin
-    if not FDecoder.DecodeAudioPcm16Stereo48kUntil(TargetSampleCount, FCache,
-      FSampleCount, FFinished, FLastError) then
-      Exit;
-  end;
-
-  if Start >= FSampleCount then
-    Exit;
-
-  if Readed <> nil then
-    Readed^ := Min(Length, FSampleCount - Start);
-  if (Readed = nil) or (Readed^ <= 0) then
-    Exit;
-
-  Result := @FCache[Start * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt)];
-end;
-
-function OutputGetVideo(Frame: Integer; Format: DWORD): Pointer; cdecl;
-begin
-  Result := nil;
-  if CurrentProvider <> nil then
-    Result := CurrentProvider.GetVideo(Frame, Format);
-end;
-
-function OutputGetAudio(Start, Length: Integer; Readed: PInteger; Format: DWORD): Pointer; cdecl;
-begin
-  if Readed <> nil then
-    Readed^ := 0;
-  if CurrentAudioProvider <> nil then
-    Result := CurrentAudioProvider.GetAudio(Start, Length, Readed, Format)
-  else
-    Result := nil;
-end;
-
-function OutputIsAbort: Boolean; cdecl;
-begin
-  Result := CurrentAborted;
-end;
-
-procedure OutputRestTimeDisp(NowValue, TotalValue: Integer); cdecl;
-begin
-end;
-
-procedure OutputSetBufferSize(VideoSize, AudioSize: Integer); cdecl;
-begin
 end;
 
 function CheckFFmpeg(ResultCode: Integer; const Operation: string; out ErrorMessage: string): Boolean;
@@ -527,7 +355,7 @@ end;
 
 function EncodeAudioFromCallbacks(FormatContext: PAVFormatContext; AudioCodecContext: PAVCodecContext;
   AudioStream: PAVStream; Packet: PAVPacket; oip: POutputInfo; const Settings: TOutputTestSettings;
-  out ErrorMessage: string): Boolean;
+  PerfLogger: TOutputPerfLogger; out ErrorMessage: string): Boolean;
 var
   Frame: PAVFrame;
   AudioFrame: PAVFrameAudioPublic;
@@ -542,6 +370,7 @@ var
   AudioData: Pointer;
   ConvertedSamples: Integer;
   Code: Integer;
+  StageStopwatch: TStopwatch;
 begin
   Result := False;
   Frame := nil;
@@ -585,11 +414,19 @@ begin
         Break;
 
       SamplesToRead := Min(AUDIO_ENCODER_FRAME_SAMPLES, oip^.audio_n - SampleStart);
+      StageStopwatch := TStopwatch.StartNew;
       AudioData := oip^.func_get_audio(SampleStart, SamplesToRead, @Readed, OUTPUT_TEST_FORMAT_PCM16);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsGetAudio, StopwatchElapsedMs(StageStopwatch));
       if (AudioData = nil) or (Readed <= 0) then
         Break;
 
+      StageStopwatch := TStopwatch.StartNew;
       Code := av_frame_make_writable(Frame);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsAudioWritable, StopwatchElapsedMs(StageStopwatch));
       if not CheckFFmpeg(Code, 'audio av_frame_make_writable', ErrorMessage) then
         Exit;
 
@@ -600,8 +437,12 @@ begin
       InData[0] := PByte(AudioData);
       OutData[0] := Frame^.data[0];
       OutData[1] := Frame^.data[1];
+      StageStopwatch := TStopwatch.StartNew;
       ConvertedSamples := TFFmpegApi.swr_convert(SwrContext, @OutData[0], Readed,
         @InData[0], Readed);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsAudioConvert, StopwatchElapsedMs(StageStopwatch));
       if ConvertedSamples <= 0 then
       begin
         ErrorMessage := 'audio swr_convert failed.';
@@ -609,14 +450,24 @@ begin
       end;
       AudioFrame^.nb_samples := ConvertedSamples;
 
-      if not SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
-        Packet, Frame, ErrorMessage) then
+      StageStopwatch := TStopwatch.StartNew;
+      Result := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
+        Packet, Frame, ErrorMessage);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsAudioEncodeWrite, StopwatchElapsedMs(StageStopwatch));
+      if not Result then
         Exit;
       Inc(SampleStart, Readed);
     end;
 
-    if not SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
-      Packet, nil, ErrorMessage) then
+    StageStopwatch := TStopwatch.StartNew;
+    Result := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
+      Packet, nil, ErrorMessage);
+    StageStopwatch.Stop;
+    if PerfLogger <> nil then
+      PerfLogger.Add(opsAudioEncodeWrite, StopwatchElapsedMs(StageStopwatch));
+    if not Result then
       Exit;
 
     Result := True;
@@ -656,7 +507,9 @@ var
   FrameData: Pointer;
   Code: Integer;
   FrameStopwatch: TStopwatch;
+  StageStopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
+  OverallStopwatch: TStopwatch;
   FrameSeconds: Double;
   CurrentFps: Double;
   AverageFps: Double;
@@ -667,6 +520,9 @@ var
   FatalAfterHeader: Boolean;
   EncodedFrameCount: Integer;
   EncoderPixelFormat: Integer;
+  PerfLogger: TOutputPerfLogger;
+  PerfLogFinished: Boolean;
+  PerfStatus: string;
 begin
   Result := False;
   ErrorMessage := '';
@@ -680,16 +536,25 @@ begin
   EndOfSource := False;
   FatalAfterHeader := False;
   EncodedFrameCount := 0;
+  PerfLogFinished := False;
+  PerfStatus := 'not_started';
 
   LoadOutputApi;
   SaveFileUtf8 := UTF8String(string(oip^.savefile));
   EncoderPixelFormat := OutputPixelFormatFFmpegValue(Settings.Video.PixelFormat);
-
-  Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
-  if not CheckFFmpeg(Code, 'avformat_alloc_output_context2', ErrorMessage) then
-    Exit;
+  OverallStopwatch := TStopwatch.StartNew;
+  if OUTPUT_PERF_LOG_ENABLED then
+    PerfLogger := TOutputPerfLogger.Create(string(oip^.savefile), oip^.w, oip^.h, oip^.n,
+      string(Settings.Video.EncoderName), Settings.Video.PixelFormatName,
+      OutputVideoInputName, OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT)
+  else
+    PerfLogger := nil;
 
   try
+    Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
+    if not CheckFFmpeg(Code, 'avformat_alloc_output_context2', ErrorMessage) then
+      Exit;
+
     Codec := avcodec_find_encoder_by_name(PAnsiChar(Settings.Video.EncoderName));
     if Codec = nil then
     begin
@@ -774,13 +639,15 @@ begin
       Exit;
     end;
 
-    SwsContext := TFFmpegApi.sws_getContext(oip^.w, oip^.h, AV_PIX_FMT_BGR24,
+    SwsContext := TFFmpegApi.sws_getContext(oip^.w, oip^.h, OutputVideoInputFFmpegPixelFormat,
       oip^.w, oip^.h, EncoderPixelFormat, SWS_BILINEAR, nil, nil, nil);
     if SwsContext = nil then
     begin
       ErrorMessage := 'sws_getContext failed.';
       Exit;
     end;
+    if Assigned(oip^.func_set_buffer_size) then
+      oip^.func_set_buffer_size(OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT);
 
     TotalStopwatch := TStopwatch.StartNew;
     CurrentFps := 0;
@@ -796,30 +663,27 @@ begin
         Break;
       end;
 
-      FrameData := oip^.func_get_video(FrameIndex, OUTPUT_VIDEO_FORMAT_RGB24);
+      StageStopwatch := TStopwatch.StartNew;
+      FrameData := oip^.func_get_video(FrameIndex, OutputVideoInputAviUtlFormat);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsGetVideo, StopwatchElapsedMs(StageStopwatch));
       if FrameData = nil then
       begin
         if (FrameIndex > 0) or (EncodedFrameCount > 0) then
         begin
-          if (CurrentProvider <> nil) and (CurrentProvider.LastError <> '') and
-            (CurrentProvider.LastError <> 'End of stream.') then
-          begin
-            FatalAfterHeader := True;
-            ErrorMessage := 'Output stopped while reading frame ' + IntToStr(FrameIndex) +
-              ': ' + CurrentProvider.LastError;
-          end
-          else
-            EndOfSource := True;
+          EndOfSource := True;
           Break;
-        end
-        else if CurrentProvider <> nil then
-          ErrorMessage := CurrentProvider.LastError
-        else
-          ErrorMessage := 'func_get_video returned nil.';
+        end;
+        ErrorMessage := 'func_get_video returned nil.';
         Exit;
       end;
 
+      StageStopwatch := TStopwatch.StartNew;
       Code := av_frame_make_writable(Frame);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsFrameWritable, StopwatchElapsedMs(StageStopwatch));
       if not CheckFFmpeg(Code, 'av_frame_make_writable', ErrorMessage) then
       begin
         FatalAfterHeader := True;
@@ -830,19 +694,29 @@ begin
       FillChar(SrcStride, SizeOf(SrcStride), 0);
       FillChar(DstData, SizeOf(DstData), 0);
       FillChar(DstStride, SizeOf(DstStride), 0);
-      SrcData[0] := Pointer(NativeUInt(FrameData) + NativeUInt((oip^.h - 1) * oip^.w * 3));
-      SrcStride[0] := -oip^.w * 3;
+      SrcData[0] := Pointer(NativeUInt(FrameData) +
+        OutputVideoInputFirstLineOffset(oip^.w, oip^.h));
+      SrcStride[0] := OutputVideoInputSwsStride(oip^.w);
       DstData[0] := Frame^.data[0];
       DstData[1] := Frame^.data[1];
       DstData[2] := Frame^.data[2];
       DstStride[0] := Frame^.linesize[0];
       DstStride[1] := Frame^.linesize[1];
       DstStride[2] := Frame^.linesize[2];
+      StageStopwatch := TStopwatch.StartNew;
       TFFmpegApi.sws_scale(SwsContext, @SrcData[0], @SrcStride[0], 0, oip^.h,
         @DstData[0], @DstStride[0]);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsVideoConvert, StopwatchElapsedMs(StageStopwatch));
 
       Frame^.pts := FrameIndex;
-      if not SendFrameAndWritePackets(FormatContext, CodecContext, Stream, Packet, Frame, ErrorMessage) then
+      StageStopwatch := TStopwatch.StartNew;
+      Result := SendFrameAndWritePackets(FormatContext, CodecContext, Stream, Packet, Frame, ErrorMessage);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsVideoEncodeWrite, StopwatchElapsedMs(StageStopwatch));
+      if not Result then
       begin
         FatalAfterHeader := True;
         Break;
@@ -871,18 +745,25 @@ begin
         oip^.func_rest_time_disp(FrameIndex + 1, oip^.n);
       if Assigned(OnProgress) then
         OnProgress(FrameIndex + 1, oip^.n, CurrentFps, AverageFps, MinFps, MaxFps);
+      if PerfLogger <> nil then
+        PerfLogger.LogFrame(FrameIndex + 1, oip^.n, StopwatchElapsedMs(FrameStopwatch), AverageFps);
     end;
 
     if EncodedFrameCount > 0 then
     begin
-      if not SendFrameAndWritePackets(FormatContext, CodecContext, Stream, Packet, nil, ErrorMessage) then
+      StageStopwatch := TStopwatch.StartNew;
+      Result := SendFrameAndWritePackets(FormatContext, CodecContext, Stream, Packet, nil, ErrorMessage);
+      StageStopwatch.Stop;
+      if PerfLogger <> nil then
+        PerfLogger.Add(opsVideoEncodeWrite, StopwatchElapsedMs(StageStopwatch));
+      if not Result then
         FatalAfterHeader := True;
     end;
 
     if (AudioCodecContext <> nil) and (not Aborted) and (not FatalAfterHeader) then
     begin
       if not EncodeAudioFromCallbacks(FormatContext, AudioCodecContext, AudioStream,
-        Packet, oip, Settings, ErrorMessage) then
+        Packet, oip, Settings, PerfLogger, ErrorMessage) then
         FatalAfterHeader := True;
     end;
 
@@ -896,16 +777,28 @@ begin
     if Aborted then
     begin
       ErrorMessage := 'Output was stopped. Partial MP4 was finalized.';
+      PerfStatus := 'aborted';
       Result := False;
     end
     else if FatalAfterHeader then
     begin
       if ErrorMessage = '' then
         ErrorMessage := 'Output stopped after header. Partial MP4 was finalized.';
+      PerfStatus := 'fatal_after_header';
       Result := False;
     end
     else
+    begin
+      PerfStatus := 'ok';
       Result := True;
+    end;
+
+    if PerfLogger <> nil then
+    begin
+      OverallStopwatch.Stop;
+      PerfLogger.Finish(EncodedFrameCount, StopwatchElapsedMs(OverallStopwatch), PerfStatus);
+      PerfLogFinished := True;
+    end;
   finally
     if SwsContext <> nil then
       TFFmpegApi.sws_freeContext(SwsContext);
@@ -921,69 +814,17 @@ begin
       avio_closep(@FormatContext^.pb);
     if FormatContext <> nil then
       avformat_free_context(FormatContext);
-  end;
-end;
-
-function ExportVideoWithOutputCallbacks(const SourceFileName: string;
-  const Settings: TOutputTestSettings;
-  const SourceInfo: TVideoInfo; OnProgress: TOutputProgressEvent;
-  out ErrorMessage: string): Boolean;
-var
-  OutputInfo: TOutputInfo;
-  SaveFileWide: string;
-  Provider: TOutputVideoProvider;
-  AudioProvider: TOutputAudioProvider;
-begin
-  Result := False;
-  ErrorMessage := '';
-  if SourceFileName = '' then
-  begin
-    ErrorMessage := 'Source video is not open.';
-    Exit;
-  end;
-  if (SourceInfo.Width <= 0) or (SourceInfo.Height <= 0) or (SourceInfo.Fps <= 0) then
-  begin
-    ErrorMessage := 'Source video information is invalid.';
-    Exit;
-  end;
-
-  Provider := TOutputVideoProvider.Create(SourceFileName, SourceInfo);
-  AudioProvider := nil;
-  try
-    CurrentProvider := Provider;
-    if SourceInfo.Audio.Present and Settings.Audio.Enabled then
+    if PerfLogger <> nil then
     begin
-      AudioProvider := TOutputAudioProvider.Create(SourceFileName);
-      CurrentAudioProvider := AudioProvider;
+      if not PerfLogFinished then
+      begin
+        OverallStopwatch.Stop;
+        if PerfStatus = 'not_started' then
+          PerfStatus := 'failed_before_finish';
+        PerfLogger.Finish(EncodedFrameCount, StopwatchElapsedMs(OverallStopwatch), PerfStatus);
+      end;
+      PerfLogger.Free;
     end;
-    CurrentAborted := False;
-    SaveFileWide := Settings.SaveFileName;
-    FillChar(OutputInfo, SizeOf(OutputInfo), 0);
-    OutputInfo.flag := OUTPUT_INFO_FLAG_VIDEO;
-    if AudioProvider <> nil then
-      OutputInfo.flag := OutputInfo.flag or OUTPUT_INFO_FLAG_AUDIO;
-    OutputInfo.w := SourceInfo.Width;
-    OutputInfo.h := SourceInfo.Height;
-    OutputInfo.rate := Round(SourceInfo.Fps * 1000);
-    OutputInfo.scale := 1000;
-    OutputInfo.n := Max(1, Round(SourceInfo.DurationSec * SourceInfo.Fps));
-    OutputInfo.audio_rate := Settings.Audio.SampleRate;
-    OutputInfo.audio_ch := Settings.Audio.Channels;
-    if AudioProvider <> nil then
-      OutputInfo.audio_n := Max(1, Round(SourceInfo.DurationSec * Settings.Audio.SampleRate));
-    OutputInfo.savefile := PWideChar(SaveFileWide);
-    OutputInfo.func_get_video := OutputGetVideo;
-    OutputInfo.func_get_audio := OutputGetAudio;
-    OutputInfo.func_is_abort := OutputIsAbort;
-    OutputInfo.func_rest_time_disp := OutputRestTimeDisp;
-    OutputInfo.func_set_buffer_size := OutputSetBufferSize;
-
-    Result := RunDirectFfmpegEncode(@OutputInfo, Settings, OnProgress, ErrorMessage);
-  finally
-    CurrentProvider := nil;
-    CurrentAudioProvider := nil;
-    AudioProvider.Free;
-    Provider.Free;
   end;
 end;
 

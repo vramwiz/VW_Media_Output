@@ -4,12 +4,38 @@ uses
   Winapi.Windows,
   System.SysUtils,
   AviUtl2OutputTypes in 'AviUtl\Output\AviUtl2OutputTypes.pas',
-  FFmpegApi in 'Plugin_Input\FFmpegApi.pas',
+  FFmpegApi in 'Plugin_Output\FFmpegApi.pas',
   FFmpegOutputConfig in 'Plugin_Output\FFmpegOutputConfig.pas',
-  FFmpegOutputEncoder in 'Plugin_Output\FFmpegOutputEncoder.pas';
+  FFmpegOutputEncoder in 'Plugin_Output\FFmpegOutputEncoder.pas',
+  FFmpegOutputSettingsDialog in 'Plugin_Output\FFmpegOutputSettingsDialog.pas',
+  FFmpegOutputSettingsStorage in 'Plugin_Output\FFmpegOutputSettingsStorage.pas';
 
 var
-  LastConfigText: string = 'MP4 / H.264 Intel QSV / AAC 192 kbps';
+  CurrentSettings: TOutputTestSettings;
+  CurrentSettingsInitialized: Boolean = False;
+  LastConfigText: string = '';
+
+procedure EnsureCurrentSettings;
+begin
+  if CurrentSettingsInitialized then
+    Exit;
+  LoadOutputSettingsFromIni(CurrentSettings);
+  CurrentSettingsInitialized := True;
+end;
+
+procedure UpdateConfigText;
+var
+  AudioText: string;
+begin
+  EnsureCurrentSettings;
+  if CurrentSettings.Audio.Enabled then
+    AudioText := Format('AAC %d kbps', [CurrentSettings.Audio.BitRate div 1000])
+  else
+    AudioText := 'Audio none';
+  LastConfigText := Format('%s / %s / %s / %s',
+    [CurrentSettings.Container, CurrentSettings.Video.CodecName,
+     CurrentSettings.Video.PixelFormatName, AudioText]);
+end;
 
 //------------------------------------------------------------------------------
 // Output process
@@ -26,7 +52,8 @@ begin
       Exit(False);
     end;
 
-    InitDefaultOutputSettings(Settings);
+    EnsureCurrentSettings;
+    Settings := CurrentSettings;
     Settings.SaveFileName := string(oip^.savefile);
 
     Result := ExportOutputInfo(oip, Settings, ErrorMessage);
@@ -47,11 +74,13 @@ end;
 //------------------------------------------------------------------------------
 function func_config(hwnd: HWND; hinst: HINST): Boolean; cdecl;
 begin
-  MessageBox(hwnd,
-    'Current fixed settings:'#13#10 +
-    'MP4 / H.264 Intel QSV / AAC 192 kbps',
-    'VW_Media_Output', MB_OK or MB_ICONINFORMATION);
-  Result := True;
+  EnsureCurrentSettings;
+  Result := ExecuteOutputSettingsDialog(hwnd, CurrentSettings);
+  if Result then
+  begin
+    SaveOutputSettingsToIni(CurrentSettings);
+    UpdateConfigText;
+  end;
 end;
 
 //------------------------------------------------------------------------------
@@ -59,6 +88,7 @@ end;
 //------------------------------------------------------------------------------
 function func_get_config_text: LPCWSTR; cdecl;
 begin
+  UpdateConfigText;
   Result := PWideChar(LastConfigText);
 end;
 
@@ -78,7 +108,9 @@ var
     information: '様々な動画/音声形式を書き出すための AviUtl2 出力プラグイン';
     func_output: func_output;
     func_config: func_config;
-    func_get_config_text: func_get_config_text
+    func_get_config_text: func_get_config_text;
+    func_load_project_config: nil;
+    func_save_project_config: nil
   );
 
 //------------------------------------------------------------------------------
