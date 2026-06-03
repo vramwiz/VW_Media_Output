@@ -157,23 +157,39 @@ type
   Tav_find_best_stream = function(ic: PAVFormatContext; media_type: Integer; wanted_stream_nb: Integer; related_stream: Integer; decoder_ret: Pointer; flags: Integer): Integer; cdecl;
   Tav_read_frame = function(s: PAVFormatContext; pkt: PAVPacket): Integer; cdecl;
   Tav_seek_frame = function(s: PAVFormatContext; stream_index: Integer; timestamp: Int64; flags: Integer): Integer; cdecl;
+  Tavformat_alloc_output_context2 = function(ctx: PPAVFormatContext; oformat: Pointer; format_name, filename: PAnsiChar): Integer; cdecl;
+  Tavformat_new_stream = function(ctx: PAVFormatContext; codec: PAVCodec): PAVStream; cdecl;
+  Tavformat_write_header = function(ctx: PAVFormatContext; options: Pointer): Integer; cdecl;
+  Tav_interleaved_write_frame = function(ctx: PAVFormatContext; pkt: PAVPacket): Integer; cdecl;
+  Tav_write_trailer = function(ctx: PAVFormatContext): Integer; cdecl;
+  Tavformat_free_context = procedure(ctx: PAVFormatContext); cdecl;
+  Tavio_open = function(s: PPointer; url: PAnsiChar; flags: Integer): Integer; cdecl;
+  Tavio_closep = function(s: PPointer): Integer; cdecl;
 
   Tavcodec_find_decoder = function(id: Integer): PAVCodec; cdecl;
+  Tavcodec_find_encoder_by_name = function(name: PAnsiChar): PAVCodec; cdecl;
   Tavcodec_alloc_context3 = function(codec: PAVCodec): PAVCodecContext; cdecl;
   Tavcodec_parameters_to_context = function(codecContext: PAVCodecContext; codecpar: PAVCodecParameters): Integer; cdecl;
+  Tavcodec_parameters_from_context = function(codecpar: PAVCodecParameters; codecContext: PAVCodecContext): Integer; cdecl;
   Tavcodec_open2 = function(codecContext: PAVCodecContext; codec: PAVCodec; options: Pointer): Integer; cdecl;
   Tavcodec_free_context = procedure(codecContext: PPAVCodecContext); cdecl;
   Tavcodec_send_packet = function(codecContext: PAVCodecContext; packet: PAVPacket): Integer; cdecl;
   Tavcodec_receive_frame = function(codecContext: PAVCodecContext; frame: PAVFrame): Integer; cdecl;
+  Tavcodec_send_frame = function(codecContext: PAVCodecContext; frame: PAVFrame): Integer; cdecl;
+  Tavcodec_receive_packet = function(codecContext: PAVCodecContext; packet: PAVPacket): Integer; cdecl;
   Tavcodec_flush_buffers = procedure(codecContext: PAVCodecContext); cdecl;
   Tav_packet_alloc = function: PAVPacket; cdecl;
   Tav_packet_free = procedure(packet: PPAVPacket); cdecl;
   Tav_packet_unref = procedure(packet: PAVPacket); cdecl;
+  Tav_packet_rescale_ts = procedure(packet: PAVPacket; tb_src, tb_dst: TAVRational); cdecl;
 
   Tav_frame_alloc = function: PAVFrame; cdecl;
   Tav_frame_free = procedure(frame: PPAVFrame); cdecl;
+  Tav_frame_get_buffer = function(frame: PAVFrame; align: Integer): Integer; cdecl;
+  Tav_frame_make_writable = function(frame: PAVFrame): Integer; cdecl;
   Tav_strerror = function(errnum: Integer; errbuf: PAnsiChar; errbuf_size: NativeUInt): Integer; cdecl;
   Tav_get_sample_fmt_name = function(sample_fmt: Integer): PAnsiChar; cdecl;
+  Tav_opt_set = function(obj: Pointer; name, val: PAnsiChar; search_flags: Integer): Integer; cdecl;
 
   Tsws_getContext = function(srcW, srcH, srcFormat, dstW, dstH, dstFormat, flags: Integer; srcFilter, dstFilter, param: Pointer): PSwsContext; cdecl;
   Tsws_scale = function(context: PSwsContext; srcSlice, srcStride: Pointer; srcSliceY, srcSliceH: Integer; dst, dstStride: Pointer): Integer; cdecl;
@@ -195,8 +211,13 @@ const
   AV_TIME_BASE = 1000000;
   AVSEEK_FLAG_BACKWARD = 1;
   AV_PIX_FMT_BGR24 = 3;
+  AV_PIX_FMT_YUV420P = 0;
   AV_PIX_FMT_BGRA = 28;
   SWS_BILINEAR = 2;
+  AVIO_FLAG_WRITE = 2;
+  AV_CODEC_FLAG_GLOBAL_HEADER = 1 shl 22;
+  AVERROR_EOF = -541478725;
+  AVERROR_EAGAIN = -11;
   AV_NOPTS_VALUE = -9223372036854775808;
   AV_SAMPLE_FMT_S16 = 1;
   AUDIO_OUTPUT_SAMPLE_RATE = 48000;

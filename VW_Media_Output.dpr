@@ -1,17 +1,45 @@
-library VW_Media_Output;
+﻿library VW_Media_Output;
 
 uses
   Winapi.Windows,
   System.SysUtils,
-  AviUtl2OutputTypes in 'AviUtl\Output\AviUtl2OutputTypes.pas';
+  AviUtl2OutputTypes in 'AviUtl\Output\AviUtl2OutputTypes.pas',
+  FFmpegApi in 'Plugin_Input\FFmpegApi.pas',
+  FFmpegOutputConfig in 'Plugin_Output\FFmpegOutputConfig.pas',
+  FFmpegOutputEncoder in 'Plugin_Output\FFmpegOutputEncoder.pas';
+
+var
+  LastConfigText: string = 'MP4 / H.264 Intel QSV / AAC 192 kbps';
 
 //------------------------------------------------------------------------------
-// Output process placeholder
+// Output process
 //------------------------------------------------------------------------------
 function func_output(oip: POutputInfo): Boolean; cdecl;
+var
+  Settings: TOutputTestSettings;
+  ErrorMessage: string;
 begin
-  // TODO: Implement media export using oip^.func_get_video / func_get_audio.
-  Result := False;
+  try
+    if oip = nil then
+    begin
+      MessageBox(0, 'OutputInfo is nil.', 'VW_Media_Output', MB_OK or MB_ICONERROR);
+      Exit(False);
+    end;
+
+    InitDefaultOutputSettings(Settings);
+    Settings.SaveFileName := string(oip^.savefile);
+
+    Result := ExportOutputInfo(oip, Settings, ErrorMessage);
+    if not Result and (ErrorMessage <> '') then
+      MessageBox(0, PChar(ErrorMessage), 'VW_Media_Output', MB_OK or MB_ICONERROR);
+  except
+    on E: Exception do
+    begin
+      MessageBox(0, PChar(E.ClassName + ': ' + E.Message),
+        'VW_Media_Output', MB_OK or MB_ICONERROR);
+      Result := False;
+    end;
+  end;
 end;
 
 //------------------------------------------------------------------------------
@@ -19,7 +47,9 @@ end;
 //------------------------------------------------------------------------------
 function func_config(hwnd: HWND; hinst: HINST): Boolean; cdecl;
 begin
-  MessageBox(hwnd, 'VW_Media_Output output settings are not implemented yet.',
+  MessageBox(hwnd,
+    'Current fixed settings:'#13#10 +
+    'MP4 / H.264 Intel QSV / AAC 192 kbps',
     'VW_Media_Output', MB_OK or MB_ICONINFORMATION);
   Result := True;
 end;
@@ -29,7 +59,7 @@ end;
 //------------------------------------------------------------------------------
 function func_get_config_text: LPCWSTR; cdecl;
 begin
-  Result := 'Default settings';
+  Result := PWideChar(LastConfigText);
 end;
 
 //------------------------------------------------------------------------------
@@ -48,9 +78,7 @@ var
     information: '様々な動画/音声形式を書き出すための AviUtl2 出力プラグイン';
     func_output: func_output;
     func_config: func_config;
-    func_get_config_text: func_get_config_text;
-    func_load_project_config: nil;
-    func_save_project_config: nil
+    func_get_config_text: func_get_config_text
   );
 
 //------------------------------------------------------------------------------

@@ -314,3 +314,107 @@ zip 内容:
 - zip の配置場所は `releases` ではなく `Setup` フォルダとする。
 - 現時点の zip は Debug ビルド由来。正式配布時は Release ビルドで作り直すか検討する。
 
+---
+
+# VW_Media_Output 引き継ぎメモ
+
+## 2026-06-03 出力プラグインへの FFmpeg 07 初期移植
+
+`D:\DelphiProg\test\FFmpeg\07` の映像 + 音声 MP4 直接エンコード実装を、`VW_Media_Output` へ初期移植した。
+
+追加/更新した主な内容:
+
+- `Plugin_Output\FFmpegOutputConfig.pas`
+  - 07 からコピー。
+  - 現在の固定設定は Intel QSV H.264 + AAC 192 kbps。
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - 07 の `FFmpegOutputTest.pas` をベースにコピー。
+  - AviUtl2 から渡される `POutputInfo` を直接エンコードする `ExportOutputInfo` を追加。
+  - `func_get_video` / `func_get_audio` からフレームと PCM を取り、FFmpeg DLL API で MP4 へ mux する。
+- `Plugin_Input\FFmpegApi.pas`
+  - 07 版へ同期。
+  - 出力 mux / encode に必要な FFmpeg API 型定義と定数を含む。
+- `VW_Media_Output.dpr`
+  - `func_output` の placeholder を置き換え、固定設定で `ExportOutputInfo` を呼ぶようにした。
+  - `func_config` は現在の固定設定を表示するだけ。
+  - `func_get_config_text` は `MP4 / H.264 Intel QSV / AAC 192 kbps` を返す。
+- `VW_Media_Output.dproj`
+  - `Plugin_Input` / `Plugin_Output` / `AviUtl\Output` を unit search path に追加。
+  - 出力エンコード関連ユニットを `DCCReference` に追加。
+
+現在の固定設定:
+
+- container: MP4
+- video: H.264 / Intel QSV (`h264_qsv`)
+- video pixel format: `nv12`
+- video bitrate: `4000000`
+- video preset: `veryfast`
+- audio: AAC
+- audio sample rate: `48000`
+- audio channels: stereo / 2ch
+- audio bitrate: `192000`
+
+ビルド確認:
+
+```powershell
+cmd.exe /s /c '"C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && MSBuild.exe VW_Media_Output.dproj /t:Build /p:Config=Debug /p:Platform=Win64'
+```
+
+結果:
+
+- Win64 Debug ビルド成功。
+- 警告 0。
+- エラー 0。
+- post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` と FFmpeg DLL を配置済み。
+
+注意:
+
+- まだ AviUtl2 上での実出力確認は未実施。
+- `func_get_video` の要求 format は 07 テスト実装由来で `1` を使っている。AviUtl2 実機で形式が合わない場合は、SDK の出力 format 値と返却バッファ形式を確認する。
+- 出力設定 UI はまだ仮。固定設定を表示するだけ。
+- 停止/途中失敗でも `av_write_trailer` へ到達する 07 の方針は維持している。
+
+## 2026-06-03 AviUtl2 実行時 structured exception 修正
+
+AviUtl2 beta45 で出力実行時に以下の structured exception が発生した。
+
+- `table.func_output() structured exception`
+- code: `0xE06D7363`
+- module: `KERNELBASE.dll`
+
+原因候補として、07 テスト実装由来の動画取得 format が本番 SDK と合っていなかった。
+
+- 07 テスト実装:
+  - `OUTPUT_TEST_FORMAT_BGRX32 = 1`
+  - 自前コールバックで BGRA/BGRX 32bit を返す前提。
+- AviUtl2 output2.h:
+  - `func_get_video(frame, BI_RGB)`
+  - `BI_RGB = 0`
+  - 返る形式は RGB24bit DIB。
+
+修正内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `func_get_video` の要求 format を `0(BI_RGB)` に変更。
+  - `sws_getContext` の入力 pixel format を `AV_PIX_FMT_BGRA` から `AV_PIX_FMT_BGR24` に変更。
+  - 入力 stride を `w * 4` から `w * 3` に変更。
+  - 音声 encoder 作成条件を `OUTPUT_INFO_FLAG_AUDIO` / `func_get_audio assigned` も見るようにした。
+- `VW_Media_Output.dpr`
+  - `func_output` 全体を `try..except` で囲み、Delphi 例外を AviUtl2 へ漏らさずメッセージ表示して `False` を返すようにした。
+- `AviUtl\Output\AviUtl2OutputTypes.pas`
+  - `output2.h` と一致する最小定義へ整理。
+  - `OUTPUT_PLUGIN_TABLE` 末尾の project config 用フィールドを削除。
+
+確認:
+
+- Win64 Debug ビルド成功。
+- 警告 0。
+- エラー 0。
+- post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` を更新済み。
+
+次の実機確認:
+
+- AviUtl2 を再起動して、更新後の `VW_Media_Output.auo2` で再度出力する。
+- まだエラーが出る場合は、今度は `func_output` 内の `try..except` により `VW_Media_Output` のエラーメッセージが表示されるはず。
+- 幅が 4 の倍数ではない動画で RGB24 DIB の行 stride が問題になる場合は、`((w * 3 + 3) and not 3)` の DIB stride 対応を追加する。
+
