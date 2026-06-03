@@ -1,4 +1,4 @@
-unit FFmpegOutputSettingsDialog;
+﻿unit FFmpegOutputSettingsDialog;
 
 interface
 
@@ -158,6 +158,19 @@ var
   begin
     Result := Max(MinimumWidth, Dialog.Canvas.TextWidth(Text) + S(48));
   end;
+
+  function EncoderComboWidth(MinimumWidth: Integer): Integer;
+  var
+    I: Integer;
+    Info: TOutputEncoderInfo;
+  begin
+    Result := MinimumWidth;
+    for I := 0 to OUTPUT_ENCODER_COUNT - 1 do
+    begin
+      Info := OutputEncoderInfo(I);
+      Result := Max(Result, TextWidthWithPadding(Info.DisplayName, MinimumWidth));
+    end;
+  end;
 begin
   Result := False;
 
@@ -184,7 +197,7 @@ begin
     ComboHeight := S(25);
     ButtonWidth := S(88);
     ButtonHeight := S(29);
-    EncoderWidth := TextWidthWithPadding('GPU / H.264 Intel QSV', S(280));
+    EncoderWidth := EncoderComboWidth(S(280));
     QualityWidth := TextWidthWithPadding('High quality', S(170));
     AudioWidth := TextWidthWithPadding('AAC 576 kbps', S(170));
     SettingsHeight := Dialog.Canvas.TextHeight('MP4') * 2 + S(14);

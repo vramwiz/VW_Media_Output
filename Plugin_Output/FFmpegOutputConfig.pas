@@ -1,9 +1,9 @@
-unit FFmpegOutputConfig;
+﻿unit FFmpegOutputConfig;
 
 interface
 
 type
-  TOutputEncoderKind = (oekCpuX264, oekIntelQsv);
+  TOutputEncoderKind = (oekCpuX264, oekIntelQsv, oekNvidiaNvenc, oekAmdAmf);
   TOutputPixelFormatKind = (opfYuv420p, opfNv12);
   TOutputVideoQualityKind = (ovqHigh, ovqStandard, ovqFast);
   TOutputAudioModeKind = (oamAac576, oamAac384, oamAac256, oamAac192, oamAac128, oamNone);
@@ -49,7 +49,7 @@ type
   end;
 
 const
-  OUTPUT_ENCODER_COUNT = 2;
+  OUTPUT_ENCODER_COUNT = 4;
   OUTPUT_VIDEO_QUALITY_COUNT = 3;
   OUTPUT_AUDIO_MODE_COUNT = 6;
 
@@ -104,6 +104,30 @@ begin
         Result.IsGpu := True;
         Result.DefaultBitRate := 4000000;
         Result.DefaultPreset := 'veryfast';
+        Result.DefaultQuality := 23;
+      end;
+    2:
+      begin
+        Result.Kind := oekNvidiaNvenc;
+        Result.DisplayName := 'GPU / H.264 NVIDIA NVENC';
+        Result.EncoderName := 'h264_nvenc';
+        Result.PixelFormat := opfNv12;
+        Result.PixelFormatName := 'nv12';
+        Result.IsGpu := True;
+        Result.DefaultBitRate := 4000000;
+        Result.DefaultPreset := 'p4';
+        Result.DefaultQuality := 23;
+      end;
+    3:
+      begin
+        Result.Kind := oekAmdAmf;
+        Result.DisplayName := 'GPU / H.264 AMD AMF';
+        Result.EncoderName := 'h264_amf';
+        Result.PixelFormat := opfNv12;
+        Result.PixelFormatName := 'nv12';
+        Result.IsGpu := True;
+        Result.DefaultBitRate := 4000000;
+        Result.DefaultPreset := 'balanced';
         Result.DefaultQuality := 23;
       end;
   else
@@ -281,19 +305,40 @@ begin
       begin
         Settings.Video.BitRate := 8000000;
         Settings.Video.Quality := 18;
-        Settings.Video.Preset := 'medium';
+        case Settings.Video.EncoderKind of
+          oekNvidiaNvenc:
+            Settings.Video.Preset := 'p5';
+          oekAmdAmf:
+            Settings.Video.Preset := 'quality';
+        else
+          Settings.Video.Preset := 'medium';
+        end;
       end;
     ovqStandard:
       begin
         Settings.Video.BitRate := 4000000;
         Settings.Video.Quality := 23;
-        Settings.Video.Preset := 'veryfast';
+        case Settings.Video.EncoderKind of
+          oekNvidiaNvenc:
+            Settings.Video.Preset := 'p4';
+          oekAmdAmf:
+            Settings.Video.Preset := 'balanced';
+        else
+          Settings.Video.Preset := 'veryfast';
+        end;
       end;
     ovqFast:
       begin
         Settings.Video.BitRate := 2500000;
         Settings.Video.Quality := 28;
-        Settings.Video.Preset := 'veryfast';
+        case Settings.Video.EncoderKind of
+          oekNvidiaNvenc:
+            Settings.Video.Preset := 'p3';
+          oekAmdAmf:
+            Settings.Video.Preset := 'speed';
+        else
+          Settings.Video.Preset := 'veryfast';
+        end;
       end;
   end;
 end;

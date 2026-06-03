@@ -1,4 +1,4 @@
-unit FFmpegOutputPerfLog;
+﻿unit FFmpegOutputPerfLog;
 
 interface
 
@@ -6,7 +6,7 @@ uses
   System.Diagnostics, System.SysUtils;
 
 const
-  OUTPUT_PERF_LOG_ENABLED = False; // perf logを出すかどうか
+  OUTPUT_PERF_LOG_ENABLED = True; // perf logを出すかどうか
   OUTPUT_PERF_LOG_EVERY_N_FRAMES = 30; // 途中経過を出す間隔
 
 type

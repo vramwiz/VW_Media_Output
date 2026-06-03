@@ -7,8 +7,11 @@ uses
   FFmpegApi in 'Plugin_Output\FFmpegApi.pas',
   FFmpegOutputConfig in 'Plugin_Output\FFmpegOutputConfig.pas',
   FFmpegOutputEncoder in 'Plugin_Output\FFmpegOutputEncoder.pas',
+  FFmpegOutputApiTypes in 'Plugin_Output\FFmpegOutputApiTypes.pas',
+  FFmpegOutputPerfLog in 'Plugin_Output\FFmpegOutputPerfLog.pas',
   FFmpegOutputSettingsDialog in 'Plugin_Output\FFmpegOutputSettingsDialog.pas',
-  FFmpegOutputSettingsStorage in 'Plugin_Output\FFmpegOutputSettingsStorage.pas';
+  FFmpegOutputSettingsStorage in 'Plugin_Output\FFmpegOutputSettingsStorage.pas',
+  FFmpegOutputVideoInput in 'Plugin_Output\FFmpegOutputVideoInput.pas';
 
 var
   CurrentSettings: TOutputTestSettings; // DLL内で保持する現在の出力設定

@@ -103,7 +103,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <Manifest_File>..\AviutlPlugin\InputSample_05\(なし)</Manifest_File>
         <AppDPIAwarenessMode>none</AppDPIAwarenessMode>
         <DCC_ExeOutput>C:\ProgramData\aviutl2\Plugin\VW_Media_Output</DCC_ExeOutput>
-        <Debugger_HostApplication>D:\aviutl2beta45\aviutl2.exe</Debugger_HostApplication>
+        <Debugger_HostApplication>D:\aviutl2beta48\aviutl2.exe</Debugger_HostApplication>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2)'!=''">
         <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
@@ -130,8 +130,11 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="Plugin_Output\FFmpegApi.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputConfig.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputEncoder.pas"/>
+        <DCCReference Include="Plugin_Output\FFmpegOutputApiTypes.pas"/>
+        <DCCReference Include="Plugin_Output\FFmpegOutputPerfLog.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputSettingsDialog.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputSettingsStorage.pas"/>
+        <DCCReference Include="Plugin_Output\FFmpegOutputVideoInput.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

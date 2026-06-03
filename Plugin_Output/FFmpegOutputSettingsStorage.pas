@@ -41,6 +41,10 @@ begin
       Result := 'CpuX264';
     oekIntelQsv:
       Result := 'IntelQsv';
+    oekNvidiaNvenc:
+      Result := 'NvidiaNvenc';
+    oekAmdAmf:
+      Result := 'AmdAmf';
   else
     Result := 'IntelQsv';
   end;
@@ -53,6 +57,12 @@ begin
     Result := oekCpuX264
   else if SameText(Name, 'IntelQsv') or SameText(Name, 'h264_qsv') then
     Result := oekIntelQsv
+  else if SameText(Name, 'NvidiaNvenc') or SameText(Name, 'NVENC') or
+    SameText(Name, 'h264_nvenc') then
+    Result := oekNvidiaNvenc
+  else if SameText(Name, 'AmdAmf') or SameText(Name, 'AMF') or
+    SameText(Name, 'h264_amf') then
+    Result := oekAmdAmf
   else
     Result := Default;
 end;

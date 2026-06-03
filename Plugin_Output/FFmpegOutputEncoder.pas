@@ -98,6 +98,36 @@ begin
     ErrorMessage := Operation + ': ' + TFFmpegApi.ErrorText(ResultCode);
 end;
 
+function VideoEncoderOpenErrorMessage(ResultCode: Integer;
+  const Settings: TOutputTestSettings): string;
+var
+  Detail: string;
+begin
+  Detail := TFFmpegApi.ErrorText(ResultCode);
+  Result := Format('avcodec_open2: %s'#13#10#13#10 +
+    'Encoder: %s (%s)'#13#10 +
+    'Pixel format: %s'#13#10 +
+    'Preset: %s',
+    [Detail, Settings.Video.CodecName, string(Settings.Video.EncoderName),
+     Settings.Video.PixelFormatName, string(Settings.Video.Preset)]);
+
+  case Settings.Video.EncoderKind of
+    oekNvidiaNvenc:
+      Result := Result + #13#10#13#10 +
+        'NVIDIA NVENC is present in the FFmpeg DLL, but it could not be opened. ' +
+        'If the error is "Function not implemented", the NVIDIA driver is often too old ' +
+        'for the NVENC API required by this FFmpeg build, or NVENC is unavailable on this GPU.';
+    oekAmdAmf:
+      Result := Result + #13#10#13#10 +
+        'AMD AMF is present in the FFmpeg DLL, but it could not be opened. ' +
+        'Check that an AMD GPU and current AMD driver/runtime are available.';
+    oekIntelQsv:
+      Result := Result + #13#10#13#10 +
+        'Intel QSV is present in the FFmpeg DLL, but it could not be opened. ' +
+        'Check that the Intel GPU driver/runtime is available.';
+  end;
+end;
+
 // encoderから出てきたpacketをmuxerへ書き込む。
 function ReceiveAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
   Stream: PAVStream; Packet: PAVPacket; out ErrorMessage: string): Boolean;
@@ -480,8 +510,11 @@ begin
     end;
 
     Code := TFFmpegApi.avcodec_open2(CodecContext, Codec, nil);
-    if not CheckFFmpeg(Code, 'avcodec_open2', ErrorMessage) then
+    if Code < 0 then
+    begin
+      ErrorMessage := VideoEncoderOpenErrorMessage(Code, Settings);
       Exit;
+    end;
 
     Stream := avformat_new_stream(FormatContext, nil);
     if Stream = nil then
