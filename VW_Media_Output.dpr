@@ -109,7 +109,7 @@ var
   // 保存ダイアログ本体はAviUtl2側が持つため、ここでは名前・拡張子・設定関数だけを渡す。
   Plugin: TOutputPluginTable = (
     flag: OUTPUT_PLUGIN_FLAG_VIDEO or OUTPUT_PLUGIN_FLAG_AUDIO;
-    name: '動画/音声出力';
+    name: '動画OUT';
     filefilter: MEDIA_FILE_FILTER;
     information: '様々な動画/音声形式を書き出すための AviUtl2 出力プラグイン';
     func_output: func_output;
