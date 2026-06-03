@@ -15,9 +15,10 @@ uses
   Winapi.Windows, System.IniFiles, System.SysUtils;
 
 const
-  SETTINGS_SECTION = 'Settings';
-  SETTINGS_VERSION = 1;
+  SETTINGS_SECTION = 'Settings'; // INIの設定セクション名
+  SETTINGS_VERSION = 1; // 保存形式の目印。読み込み拒否には使わない。
 
+// プラグインDLLと同じフォルダにINIを置く。
 function OutputSettingsIniPath: string;
 var
   ModulePath: array[0..MAX_PATH - 1] of Char;
@@ -32,6 +33,7 @@ begin
       'VW_Media_Output.ini';
 end;
 
+// INIへ保存する安定名へ変換する。
 function EncoderKindToName(Kind: TOutputEncoderKind): string;
 begin
   case Kind of
@@ -44,6 +46,7 @@ begin
   end;
 end;
 
+// 未知の値はDefaultへ丸め、古いINIでも読み込みエラーにしない。
 function EncoderKindFromName(const Name: string; Default: TOutputEncoderKind): TOutputEncoderKind;
 begin
   if SameText(Name, 'CpuX264') or SameText(Name, 'libx264') then
@@ -54,6 +57,7 @@ begin
     Result := Default;
 end;
 
+// INIへ保存する安定名へ変換する。
 function VideoQualityToName(Quality: TOutputVideoQualityKind): string;
 begin
   case Quality of
@@ -68,6 +72,7 @@ begin
   end;
 end;
 
+// 未知の値はDefaultへ丸め、古いINIでも読み込みエラーにしない。
 function VideoQualityFromName(const Name: string; Default: TOutputVideoQualityKind): TOutputVideoQualityKind;
 begin
   if SameText(Name, 'High') or SameText(Name, 'HighQuality') then
@@ -80,6 +85,7 @@ begin
     Result := Default;
 end;
 
+// INIへ保存する安定名へ変換する。
 function AudioModeToName(Mode: TOutputAudioModeKind): string;
 begin
   case Mode of
@@ -100,6 +106,7 @@ begin
   end;
 end;
 
+// 未知の値はDefaultへ丸め、古いINIでも読み込みエラーにしない。
 function AudioModeFromName(const Name: string; Default: TOutputAudioModeKind): TOutputAudioModeKind;
 begin
   if SameText(Name, 'Aac576') or SameText(Name, '576') then
@@ -118,6 +125,7 @@ begin
     Result := Default;
 end;
 
+// 派生済みSettingsから保存すべきVideoQualityだけを推定する。
 function VideoQualityFromSettings(const Settings: TOutputTestSettings): TOutputVideoQualityKind;
 begin
   if Settings.Video.BitRate >= 8000000 then
@@ -128,6 +136,7 @@ begin
     Result := ovqStandard;
 end;
 
+// 派生済みSettingsから保存すべきAudioModeだけを推定する。
 function AudioModeFromSettings(const Settings: TOutputTestSettings): TOutputAudioModeKind;
 begin
   if not Settings.Audio.Enabled then
@@ -146,6 +155,7 @@ begin
     Result := oamAac192;
 end;
 
+// INIを読み、壊れた値や未知値はデフォルトへ丸めてSettingsへ展開する。
 procedure LoadOutputSettingsFromIni(var Settings: TOutputTestSettings);
 var
   Ini: TIniFile;
@@ -181,6 +191,7 @@ begin
   end;
 end;
 
+// 本質的な選択値だけをINIへ保存し、派生値の不整合を避ける。
 procedure SaveOutputSettingsToIni(const Settings: TOutputTestSettings);
 var
   Ini: TIniFile;

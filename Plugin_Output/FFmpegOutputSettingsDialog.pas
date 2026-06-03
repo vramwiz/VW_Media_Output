@@ -16,19 +16,21 @@ uses
 type
   TOutputSettingsDialogHandler = class(TComponent)
   public
-    ComboEncoder: TComboBox;
-    ComboQuality: TComboBox;
-    ComboAudio: TComboBox;
-    LabelSettings: TLabel;
+    ComboEncoder: TComboBox; // encoder選択
+    ComboQuality: TComboBox; // video quality選択
+    ComboAudio: TComboBox; // audio bitrate選択
+    LabelSettings: TLabel; // 下部の短い設定概要
     procedure SettingChange(Sender: TObject);
     procedure UpdateSettingsLabel;
   end;
 
+// いずれかの選択が変わったら概要表示だけ更新する。
 procedure TOutputSettingsDialogHandler.SettingChange(Sender: TObject);
 begin
   UpdateSettingsLabel;
 end;
 
+// 本番UIでは情報を詰め込みすぎず、2行の概要に抑える。
 procedure TOutputSettingsDialogHandler.UpdateSettingsLabel;
 var
   Info: TOutputEncoderInfo;
@@ -77,6 +79,7 @@ begin
       BitRate / 1000000.0]);
 end;
 
+// 現在のbitrateからダイアログ選択用のqualityへ戻す。
 function VideoQualityFromSettings(const Settings: TOutputTestSettings): TOutputVideoQualityKind;
 begin
   if Settings.Video.BitRate >= 8000000 then
@@ -87,6 +90,7 @@ begin
     Result := ovqStandard;
 end;
 
+// 現在のbitrateからダイアログ選択用のaudio modeへ戻す。
 function AudioModeFromSettings(const Settings: TOutputTestSettings): TOutputAudioModeKind;
 begin
   if not Settings.Audio.Enabled then
@@ -105,6 +109,7 @@ begin
     Result := oamAac192;
 end;
 
+// AviUtl2の設定ボタンから開く、保存先を持たないエンコード専用ダイアログ。
 function ExecuteOutputSettingsDialog(OwnerWindow: HWND;
   var Settings: TOutputTestSettings): Boolean;
 var

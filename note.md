@@ -946,3 +946,42 @@ AudioMode=Aac192
 - `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.ini` が作成されることを確認する。
 - AviUtl2 を再起動して、前回設定が復元されることを確認する。
 
+## 2026-06-03 FFmpegOutputEncoder の型定義分離
+
+`Plugin_Output\FFmpegOutputEncoder.pas` が肥大化していたため、エンコード処理本体とは直接関係しない FFmpeg 公開 record / 関数型を別ユニットへ分離した。
+
+追加ユニット:
+
+- `Plugin_Output\FFmpegOutputApiTypes.pas`
+
+移動した内容:
+
+- `PAVCodecContextPublic`
+- `TAVCodecContextPublic`
+- `PAVFrameAudioPublic`
+- `TAVFrameAudioPublic`
+- `Tav_opt_set_int`
+- `Tav_opt_set_sample_fmt`
+- `Tav_opt_set_chlayout`
+
+狙い:
+
+- `FFmpegOutputEncoder.pas` の先頭にあった大きな record 群を逃がす。
+- `FFmpegOutputEncoder.pas` には、映像取得、変換、encode、mux の流れを残す。
+- FFmpeg の内部構造に依存する型は `FFmpegOutputApiTypes.pas` にまとめる。
+
+対応:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `FFmpegOutputApiTypes` を uses に追加。
+  - 上記 record / function pointer 型定義を削除。
+- `VW_Media_Output.dproj`
+  - `Plugin_Output\FFmpegOutputApiTypes.pas` を `DCCReference` に追加。
+
+確認:
+
+- Win64 Debug ビルド成功。
+- 警告 0。
+- エラー 0。
+- post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` を更新済み。
+

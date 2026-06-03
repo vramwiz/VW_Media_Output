@@ -9,43 +9,43 @@ type
   TOutputAudioModeKind = (oamAac576, oamAac384, oamAac256, oamAac192, oamAac128, oamNone);
 
   TOutputEncoderInfo = record
-    Kind: TOutputEncoderKind;
-    DisplayName: string;
-    EncoderName: AnsiString;
-    PixelFormat: TOutputPixelFormatKind;
-    PixelFormatName: string;
-    IsGpu: Boolean;
-    DefaultBitRate: Int64;
-    DefaultPreset: AnsiString;
-    DefaultQuality: Integer;
+    Kind: TOutputEncoderKind; // UI/INIで扱うencoder種別
+    DisplayName: string; // UI表示名
+    EncoderName: AnsiString; // FFmpeg encoder名
+    PixelFormat: TOutputPixelFormatKind; // encoder入力pixel format種別
+    PixelFormatName: string; // log/UI表示用pixel format名
+    IsGpu: Boolean; // GPU encoderかどうか
+    DefaultBitRate: Int64; // encoder既定bitrate
+    DefaultPreset: AnsiString; // encoder既定preset
+    DefaultQuality: Integer; // x264/qsvへ渡す品質目安
   end;
 
   TOutputVideoSettings = record
-    EncoderKind: TOutputEncoderKind;
-    CodecName: string;
-    EncoderName: AnsiString;
-    PixelFormat: TOutputPixelFormatKind;
-    PixelFormatName: string;
-    BitRate: Int64;
-    Preset: AnsiString;
-    Quality: Integer;
+    EncoderKind: TOutputEncoderKind; // 選択されたencoder種別
+    CodecName: string; // UI/log表示用codec名
+    EncoderName: AnsiString; // FFmpeg encoder名
+    PixelFormat: TOutputPixelFormatKind; // encoderへ渡すpixel format種別
+    PixelFormatName: string; // UI/log表示用pixel format名
+    BitRate: Int64; // video bitrate
+    Preset: AnsiString; // encoder preset
+    Quality: Integer; // crf/global_quality相当の目安
   end;
 
   TOutputAudioSettings = record
-    Enabled: Boolean;
-    CodecName: string;
-    EncoderName: AnsiString;
-    BitRate: Int64;
-    SampleRate: Integer;
-    Channels: Integer;
+    Enabled: Boolean; // audioを出力するか
+    CodecName: string; // UI/log表示用codec名
+    EncoderName: AnsiString; // FFmpeg encoder名
+    BitRate: Int64; // audio bitrate
+    SampleRate: Integer; // 出力sample rate
+    Channels: Integer; // 出力channel数
   end;
 
   TOutputTestSettings = record
-    SaveFileName: string;
-    PresetName: string;
-    Container: string;
-    Video: TOutputVideoSettings;
-    Audio: TOutputAudioSettings;
+    SaveFileName: string; // AviUtl2から渡された保存先
+    PresetName: string; // 将来用のpreset名
+    Container: string; // container表示名
+    Video: TOutputVideoSettings; // video encoder設定
+    Audio: TOutputAudioSettings; // audio encoder設定
   end;
 
 const
@@ -77,6 +77,7 @@ uses
 const
   AV_PIX_FMT_NV12 = 23;
 
+// UIのencoder一覧に出す固定情報を返す。
 function OutputEncoderInfo(Index: Integer): TOutputEncoderInfo;
 begin
   FillChar(Result, SizeOf(Result), 0);
@@ -110,6 +111,7 @@ begin
   end;
 end;
 
+// encoder種別から固定情報を返す。
 function OutputEncoderInfoByKind(Kind: TOutputEncoderKind): TOutputEncoderInfo;
 var
   Index: Integer;
@@ -123,6 +125,7 @@ begin
   Result := OutputEncoderInfo(0);
 end;
 
+// encoder種別からUI一覧のindexを返す。
 function OutputEncoderIndexByKind(Kind: TOutputEncoderKind): Integer;
 var
   Index: Integer;
@@ -137,6 +140,7 @@ begin
   Result := 0;
 end;
 
+// UIへ表示するvideo quality名を返す。
 function OutputVideoQualityName(Quality: TOutputVideoQualityKind): string;
 begin
   case Quality of
@@ -151,11 +155,13 @@ begin
   end;
 end;
 
+// video quality enumをUI indexへ変換する。
 function OutputVideoQualityIndex(Quality: TOutputVideoQualityKind): Integer;
 begin
   Result := Ord(Quality);
 end;
 
+// UI indexをvideo quality enumへ変換する。
 function OutputVideoQualityByIndex(Index: Integer): TOutputVideoQualityKind;
 begin
   case Index of
@@ -170,6 +176,7 @@ begin
   end;
 end;
 
+// UIへ表示するaudio mode名を返す。
 function OutputAudioModeName(Mode: TOutputAudioModeKind): string;
 begin
   case Mode of
@@ -190,11 +197,13 @@ begin
   end;
 end;
 
+// audio mode enumをUI indexへ変換する。
 function OutputAudioModeIndex(Mode: TOutputAudioModeKind): Integer;
 begin
   Result := Ord(Mode);
 end;
 
+// UI indexをaudio mode enumへ変換する。
 function OutputAudioModeByIndex(Index: Integer): TOutputAudioModeKind;
 begin
   case Index of
@@ -215,6 +224,7 @@ begin
   end;
 end;
 
+// FFmpegへ渡すpixel format値へ変換する。
 function OutputPixelFormatFFmpegValue(Format: TOutputPixelFormatKind): Integer;
 begin
   case Format of
@@ -227,6 +237,7 @@ begin
   end;
 end;
 
+// UI/logへ出すpixel format説明を返す。
 function OutputPixelFormatDescription(Format: TOutputPixelFormatKind): string;
 begin
   case Format of
@@ -239,6 +250,7 @@ begin
   end;
 end;
 
+// encoder種別の既定値をSettingsへ展開する。
 procedure ApplyEncoderDefaults(var Settings: TOutputTestSettings; Kind: TOutputEncoderKind);
 var
   Info: TOutputEncoderInfo;
@@ -261,6 +273,7 @@ begin
   Settings.Audio.Channels := AUDIO_OUTPUT_CHANNELS;
 end;
 
+// quality選択をbitrate/preset/qualityへ展開する。
 procedure ApplyVideoQuality(var Settings: TOutputTestSettings; Quality: TOutputVideoQualityKind);
 begin
   case Quality of
@@ -285,6 +298,7 @@ begin
   end;
 end;
 
+// audio選択をAAC設定または無効設定へ展開する。
 procedure ApplyAudioMode(var Settings: TOutputTestSettings; Mode: TOutputAudioModeKind);
 begin
   Settings.Audio.SampleRate := AUDIO_OUTPUT_SAMPLE_RATE;
@@ -335,6 +349,7 @@ begin
   end;
 end;
 
+// プラグインの既定設定を作る。INI読み込み前の基準値。
 procedure InitDefaultOutputSettings(var Settings: TOutputTestSettings);
 begin
   Settings.SaveFileName := '';

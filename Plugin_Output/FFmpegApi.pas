@@ -1,4 +1,4 @@
-unit FFmpegApi;
+﻿unit FFmpegApi;
 
 // FFmpeg 8.1系DLLをDelphiから呼び出すための低レベルAPI定義ユニット。
 // 必要なFFmpeg構造体、関数ポインタ、DLLロード処理、時間軸変換の補助関数をまとめる。

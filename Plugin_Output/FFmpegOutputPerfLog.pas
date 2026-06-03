@@ -6,8 +6,8 @@ uses
   System.Diagnostics, System.SysUtils;
 
 const
-  OUTPUT_PERF_LOG_ENABLED = True;
-  OUTPUT_PERF_LOG_EVERY_N_FRAMES = 30;
+  OUTPUT_PERF_LOG_ENABLED = True; // perf logを出すかどうか
+  OUTPUT_PERF_LOG_EVERY_N_FRAMES = 30; // 途中経過を出す間隔
 
 type
   TOutputPerfStage = (
@@ -22,19 +22,19 @@ type
   );
 
   TOutputPerfStageStats = record
-    Count: Int64;
-    TotalMs: Double;
-    MaxMs: Double;
+    Count: Int64; // 計測回数
+    TotalMs: Double; // 合計ms
+    MaxMs: Double; // 最大ms
     procedure Add(ElapsedMs: Double);
     function AverageMs: Double;
   end;
 
   TOutputPerfLogger = class
   private
-    FFile: TextFile;
-    FOpened: Boolean;
-    FStats: array[TOutputPerfStage] of TOutputPerfStageStats;
-    FLastFrameLog: Integer;
+    FFile: TextFile; // 出力中のlog file
+    FOpened: Boolean; // log fileを開けたかどうか
+    FStats: array[TOutputPerfStage] of TOutputPerfStageStats; // stage別統計
+    FLastFrameLog: Integer; // 最後に途中経過を出したframe
     procedure WriteLine(const Text: string);
     procedure WriteStageSummary(Stage: TOutputPerfStage);
   public
@@ -56,6 +56,7 @@ implementation
 uses
   System.IOUtils;
 
+// stage統計へ1回分の経過時間を加算する。
 procedure TOutputPerfStageStats.Add(ElapsedMs: Double);
 begin
   Inc(Count);
@@ -64,6 +65,7 @@ begin
     MaxMs := ElapsedMs;
 end;
 
+// stage統計の平均msを返す。
 function TOutputPerfStageStats.AverageMs: Double;
 begin
   if Count <= 0 then
@@ -72,6 +74,7 @@ begin
     Result := TotalMs / Count;
 end;
 
+// logへ出すstage名を返す。
 function OutputPerfStageName(Stage: TOutputPerfStage): string;
 begin
   case Stage of
@@ -96,6 +99,7 @@ begin
   end;
 end;
 
+// 出力ファイル名に.perf.logを付けたlog pathを返す。
 function OutputPerfLogPath(const SaveFileName: string): string;
 begin
   if SaveFileName <> '' then
@@ -104,11 +108,13 @@ begin
     Result := TPath.Combine(TPath.GetTempPath, 'VW_Media_Output.perf.log');
 end;
 
+// TStopwatchをmsへ変換する。
 function StopwatchElapsedMs(const Stopwatch: TStopwatch): Double;
 begin
   Result := Stopwatch.Elapsed.TotalMilliseconds;
 end;
 
+// log fileを開き、出力条件のheaderを書く。
 constructor TOutputPerfLogger.Create(const SaveFileName: string; Width, Height,
   TotalFrames: Integer; const VideoEncoder, PixelFormatName, VideoInputName: string;
   VideoBufferCount, AudioBufferCount: Integer);
@@ -140,6 +146,7 @@ begin
   WriteLine('');
 end;
 
+// log fileを閉じる前にclosed時刻を書く。
 destructor TOutputPerfLogger.Destroy;
 begin
   if FOpened then
@@ -150,6 +157,7 @@ begin
   inherited Destroy;
 end;
 
+// logへ1行書き、クラッシュ時にも残るようflushする。
 procedure TOutputPerfLogger.WriteLine(const Text: string);
 begin
   if not FOpened then
@@ -158,6 +166,7 @@ begin
   Flush(FFile);
 end;
 
+// stage別統計を追加する。
 procedure TOutputPerfLogger.Add(Stage: TOutputPerfStage; ElapsedMs: Double);
 begin
   if not FOpened then
@@ -165,6 +174,7 @@ begin
   FStats[Stage].Add(ElapsedMs);
 end;
 
+// 指定間隔ごとにフレーム単位の途中経過を書く。
 procedure TOutputPerfLogger.LogFrame(FrameIndex, TotalFrames: Integer; FrameMs,
   AverageFps: Double);
 begin
@@ -182,6 +192,7 @@ begin
      FStats[opsVideoEncodeWrite].AverageMs]));
 end;
 
+// stage別の最終集計を書く。
 procedure TOutputPerfLogger.WriteStageSummary(Stage: TOutputPerfStage);
 begin
   WriteLine(Format('%s count=%d avg_ms=%.3f max_ms=%.3f total_ms=%.3f',
@@ -189,6 +200,7 @@ begin
      FStats[Stage].MaxMs, FStats[Stage].TotalMs]));
 end;
 
+// 出力完了時の総時間とstage別集計を書く。
 procedure TOutputPerfLogger.Finish(EncodedFrameCount: Integer; TotalMs: Double;
   const Status: string);
 var

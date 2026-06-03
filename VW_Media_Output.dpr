@@ -11,10 +11,11 @@ uses
   FFmpegOutputSettingsStorage in 'Plugin_Output\FFmpegOutputSettingsStorage.pas';
 
 var
-  CurrentSettings: TOutputTestSettings;
-  CurrentSettingsInitialized: Boolean = False;
-  LastConfigText: string = '';
+  CurrentSettings: TOutputTestSettings; // DLL内で保持する現在の出力設定
+  CurrentSettingsInitialized: Boolean = False; // INI読み込み済みかどうか
+  LastConfigText: string = ''; // AviUtl2の保存ダイアログ下部へ返す文字列
 
+// 現在設定を初期化し、INIがあれば安全に反映する。
 procedure EnsureCurrentSettings;
 begin
   if CurrentSettingsInitialized then
@@ -23,6 +24,7 @@ begin
   CurrentSettingsInitialized := True;
 end;
 
+// 保存ダイアログ下部に出す短い設定概要を更新する。
 procedure UpdateConfigText;
 var
   AudioText: string;
@@ -40,6 +42,7 @@ end;
 //------------------------------------------------------------------------------
 // Output process
 //------------------------------------------------------------------------------
+// AviUtl2から渡された保存先を使い、現在設定で直接MP4を書き出す。
 function func_output(oip: POutputInfo): Boolean; cdecl;
 var
   Settings: TOutputTestSettings;
@@ -72,6 +75,7 @@ end;
 //------------------------------------------------------------------------------
 // Configuration dialog placeholder
 //------------------------------------------------------------------------------
+// AviUtl2の「設定」ボタンから呼ばれ、OK時だけINIへ保存する。
 function func_config(hwnd: HWND; hinst: HINST): Boolean; cdecl;
 begin
   EnsureCurrentSettings;
@@ -86,6 +90,7 @@ end;
 //------------------------------------------------------------------------------
 // Configuration text placeholder
 //------------------------------------------------------------------------------
+// AviUtl2の保存ダイアログに表示する現在設定の概要を返す。
 function func_get_config_text: LPCWSTR; cdecl;
 begin
   UpdateConfigText;
@@ -101,6 +106,7 @@ const
     '*.mp4;*.mov;*.mkv;*.avi'#0;
 
 var
+  // 保存ダイアログ本体はAviUtl2側が持つため、ここでは名前・拡張子・設定関数だけを渡す。
   Plugin: TOutputPluginTable = (
     flag: OUTPUT_PLUGIN_FLAG_VIDEO or OUTPUT_PLUGIN_FLAG_AUDIO;
     name: '動画/音声出力';
@@ -114,6 +120,7 @@ var
   );
 
 //------------------------------------------------------------------------------
+// AviUtl2がこの関数を探して出力プラグインを登録する。
 function GetOutputPluginTable: POutputPluginTable; cdecl;
 begin
   Result := @Plugin;

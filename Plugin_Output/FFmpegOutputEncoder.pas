@@ -9,151 +9,24 @@ type
   TOutputProgressEvent = procedure(Current, Total: Integer; CurrentFps,
     AverageFps, MinFps, MaxFps: Double) of object;
 
+// AviUtl2のOUTPUT_INFOをFFmpegへ流してMP4を書き出す公開入口。
 function ExportOutputInfo(oip: POutputInfo; const Settings: TOutputTestSettings;
   out ErrorMessage: string): Boolean;
+// 外部UIから出力中断を要求する。
 procedure RequestOutputAbort;
 
 implementation
 
 uses
   Winapi.Windows, System.Classes, System.Diagnostics, FFmpegApi,
-  FFmpegOutputPerfLog, FFmpegOutputVideoInput;
+  FFmpegOutputApiTypes, FFmpegOutputPerfLog, FFmpegOutputVideoInput;
 
 const
-  OUTPUT_TEST_FORMAT_PCM16 = 1;
-  OUTPUT_VIDEO_BUFFER_COUNT = 16;
-  OUTPUT_AUDIO_BUFFER_COUNT = 16;
-  AUDIO_ENCODER_FRAME_SAMPLES = 1024;
-  AV_SAMPLE_FMT_FLTP = 8;
-
-type
-  PAVCodecContextPublic = ^TAVCodecContextPublic;
-  TAVCodecContextPublic = record
-    av_class: Pointer;
-    log_level_offset: Integer;
-    codec_type: Integer;
-    codec: PAVCodec;
-    codec_id: Integer;
-    codec_tag: Cardinal;
-    priv_data: Pointer;
-    internal: Pointer;
-    opaque: Pointer;
-    bit_rate: Int64;
-    flags: Integer;
-    flags2: Integer;
-    extradata: PByte;
-    extradata_size: Integer;
-    time_base: TAVRational;
-    pkt_timebase: TAVRational;
-    framerate: TAVRational;
-    delay: Integer;
-    width: Integer;
-    height: Integer;
-    coded_width: Integer;
-    coded_height: Integer;
-    sample_aspect_ratio: TAVRational;
-    pix_fmt: Integer;
-    sw_pix_fmt: Integer;
-    color_primaries: Integer;
-    color_trc: Integer;
-    colorspace: Integer;
-    color_range: Integer;
-    chroma_sample_location: Integer;
-    field_order: Integer;
-    refs: Integer;
-    has_b_frames: Integer;
-    slice_flags: Integer;
-    draw_horiz_band: Pointer;
-    get_format: Pointer;
-    max_b_frames: Integer;
-    b_quant_factor: Single;
-    b_quant_offset: Single;
-    i_quant_factor: Single;
-    i_quant_offset: Single;
-    lumi_masking: Single;
-    temporal_cplx_masking: Single;
-    spatial_cplx_masking: Single;
-    p_masking: Single;
-    dark_masking: Single;
-    nsse_weight: Integer;
-    me_cmp: Integer;
-    me_sub_cmp: Integer;
-    mb_cmp: Integer;
-    ildct_cmp: Integer;
-    dia_size: Integer;
-    last_predictor_count: Integer;
-    me_pre_cmp: Integer;
-    pre_dia_size: Integer;
-    me_subpel_quality: Integer;
-    me_range: Integer;
-    mb_decision: Integer;
-    intra_matrix: Pointer;
-    inter_matrix: Pointer;
-    chroma_intra_matrix: Pointer;
-    intra_dc_precision: Integer;
-    mb_lmin: Integer;
-    mb_lmax: Integer;
-    bidir_refine: Integer;
-    keyint_min: Integer;
-    gop_size: Integer;
-    mv0_threshold: Integer;
-    slices: Integer;
-    sample_rate: Integer;
-    sample_fmt: Integer;
-    ch_layout: TAVChannelLayout;
-    frame_size: Integer;
-  end;
-
-  PAVFrameAudioPublic = ^TAVFrameAudioPublic;
-  TAVFrameAudioPublic = record
-    data: array[0..7] of PByte;
-    linesize: array[0..7] of Integer;
-    extended_data: Pointer;
-    width: Integer;
-    height: Integer;
-    nb_samples: Integer;
-    format: Integer;
-    pict_type: Integer;
-    sample_aspect_ratio: TAVRational;
-    pts: Int64;
-    pkt_dts: Int64;
-    time_base: TAVRational;
-    quality: Integer;
-    opaque: Pointer;
-    repeat_pict: Integer;
-    sample_rate: Integer;
-    buf: array[0..7] of Pointer;
-    extended_buf: Pointer;
-    nb_extended_buf: Integer;
-    side_data: Pointer;
-    nb_side_data: Integer;
-    flags: Integer;
-    color_range: Integer;
-    color_primaries: Integer;
-    color_trc: Integer;
-    colorspace: Integer;
-    chroma_location: Integer;
-    best_effort_timestamp: Int64;
-    metadata: Pointer;
-    decode_error_flags: Integer;
-    hw_frames_ctx: Pointer;
-    opaque_ref: Pointer;
-    crop_top: NativeUInt;
-    crop_bottom: NativeUInt;
-    crop_left: NativeUInt;
-    crop_right: NativeUInt;
-    private_ref: Pointer;
-    ch_layout: TAVChannelLayout;
-    duration: Int64;
-    alpha_mode: Integer;
-  end;
-
-  Tav_opt_set_int = function(obj: Pointer; name: PAnsiChar; val: Int64;
-    search_flags: Integer): Integer; cdecl;
-  Tav_opt_set_sample_fmt = function(obj: Pointer; name: PAnsiChar;
-    sample_fmt: Integer; search_flags: Integer): Integer; cdecl;
-  Tav_opt_set_chlayout = function(obj: Pointer; name: PAnsiChar;
-    const layout: PAVChannelLayout; search_flags: Integer): Integer; cdecl;
+  OUTPUT_TEST_FORMAT_PCM16 = 1; // AviUtl2へ要求するPCM16音声format
+  OUTPUT_VIDEO_BUFFER_COUNT = 16; // AviUtl2のvideo先読みbuffer数
+  OUTPUT_AUDIO_BUFFER_COUNT = 16; // AviUtl2のaudio先読みbuffer数
+  AUDIO_ENCODER_FRAME_SAMPLES = 1024; // AACへ渡す1frameあたりのsample数
+  AV_SAMPLE_FMT_FLTP = 8; // FFmpegのAAC encoder入力sample format
 
 var
   CurrentAborted: Boolean;
@@ -178,11 +51,13 @@ var
   av_opt_set_chlayout: Tav_opt_set_chlayout;
   OutputApiLoaded: Boolean;
 
+// 中断要求フラグを立てる。
 procedure RequestOutputAbort;
 begin
   CurrentAborted := True;
 end;
 
+// 出力に必要なFFmpeg関数をDLLから遅延取得する。
 procedure LoadOutputApi;
 begin
   if OutputApiLoaded then
@@ -215,6 +90,7 @@ begin
   OutputApiLoaded := True;
 end;
 
+// FFmpeg戻り値を共通形式のエラーメッセージへ変換する。
 function CheckFFmpeg(ResultCode: Integer; const Operation: string; out ErrorMessage: string): Boolean;
 begin
   Result := ResultCode >= 0;
@@ -222,6 +98,7 @@ begin
     ErrorMessage := Operation + ': ' + TFFmpegApi.ErrorText(ResultCode);
 end;
 
+// encoderから出てきたpacketをmuxerへ書き込む。
 function ReceiveAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
   Stream: PAVStream; Packet: PAVPacket; out ErrorMessage: string): Boolean;
 var
@@ -253,6 +130,7 @@ begin
   Result := True;
 end;
 
+// frame送信とpacket回収をまとめて行う。Frame=nilでflushする。
 function SendFrameAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
   Stream: PAVStream; Packet: PAVPacket; Frame: PAVFrame; out ErrorMessage: string): Boolean;
 var
@@ -279,6 +157,7 @@ begin
   Result := ReceiveAndWritePackets(FormatContext, CodecContext, Stream, Packet, ErrorMessage);
 end;
 
+// 音声streamとAAC encoderを開く。
 function OpenAudioEncoder(FormatContext: PAVFormatContext; const Settings: TOutputTestSettings;
   out AudioCodecContext: PAVCodecContext; out AudioStream: PAVStream;
   out ErrorMessage: string): Boolean;
@@ -353,6 +232,7 @@ begin
   end;
 end;
 
+// AviUtl2のfunc_get_audioからPCM16を受け取り、AACへ変換して書く。
 function EncodeAudioFromCallbacks(FormatContext: PAVFormatContext; AudioCodecContext: PAVCodecContext;
   AudioStream: PAVStream; Packet: PAVPacket; oip: POutputInfo; const Settings: TOutputTestSettings;
   PerfLogger: TOutputPerfLogger; out ErrorMessage: string): Boolean;
@@ -485,6 +365,7 @@ begin
   end;
 end;
 
+// 映像取得、色変換、video/audio encode、mux、perf logをまとめて実行する。
 function RunDirectFfmpegEncode(oip: POutputInfo; const Settings: TOutputTestSettings;
   OnProgress: TOutputProgressEvent; out ErrorMessage: string): Boolean;
 var
@@ -828,6 +709,7 @@ begin
   end;
 end;
 
+// 公開入口の引数検証を行ってから実エンコードへ渡す。
 function ExportOutputInfo(oip: POutputInfo; const Settings: TOutputTestSettings;
   out ErrorMessage: string): Boolean;
 begin

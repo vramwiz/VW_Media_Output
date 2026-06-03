@@ -142,6 +142,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         </DelphiCompile>
         <DCCReference Include="AviUtl\Output\AviUtl2OutputTypes.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegApi.pas"/>
+        <DCCReference Include="Plugin_Output\FFmpegOutputApiTypes.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputConfig.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputEncoder.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputPerfLog.pas"/>
