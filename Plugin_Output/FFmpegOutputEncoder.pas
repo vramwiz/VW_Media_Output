@@ -1,4 +1,4 @@
-unit FFmpegOutputEncoder;
+﻿unit FFmpegOutputEncoder;
 
 interface
 
@@ -404,6 +404,7 @@ var
   PerfLogger: TOutputPerfLogger;
   PerfLogFinished: Boolean;
   PerfStatus: string;
+  EffectiveSettings: TOutputTestSettings;
 begin
   Result := False;
   ErrorMessage := '';
@@ -419,6 +420,15 @@ begin
   EncodedFrameCount := 0;
   PerfLogFinished := False;
   PerfStatus := 'not_started';
+
+  EffectiveSettings := Settings;
+  if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) then
+  begin
+    if oip^.audio_rate > 0 then
+      EffectiveSettings.Audio.SampleRate := oip^.audio_rate;
+    if oip^.audio_ch > 0 then
+      EffectiveSettings.Audio.Channels := oip^.audio_ch;
+  end;
 
   LoadOutputApi;
   SaveFileUtf8 := UTF8String(string(oip^.savefile));
@@ -488,7 +498,7 @@ begin
     if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) and
       Assigned(oip^.func_get_audio) and Settings.Audio.Enabled then
     begin
-      if not OpenAudioEncoder(FormatContext, Settings, AudioCodecContext, AudioStream, ErrorMessage) then
+      if not OpenAudioEncoder(FormatContext, EffectiveSettings, AudioCodecContext, AudioStream, ErrorMessage) then
         Exit;
     end;
 
@@ -644,7 +654,7 @@ begin
     if (AudioCodecContext <> nil) and (not Aborted) and (not FatalAfterHeader) then
     begin
       if not EncodeAudioFromCallbacks(FormatContext, AudioCodecContext, AudioStream,
-        Packet, oip, Settings, PerfLogger, ErrorMessage) then
+        Packet, oip, EffectiveSettings, PerfLogger, ErrorMessage) then
         FatalAfterHeader := True;
     end;
 
