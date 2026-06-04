@@ -1049,3 +1049,43 @@ AudioMode=Aac192
 - エラー 0。
 - post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` を更新済み。
 
+## 2026-06-04 出力ボトルネック確認用ログ改善
+
+入力側の高速化により、次の主な確認対象は出力側になった。
+
+現時点の判断:
+
+- 既存実測では RGB24 から YUY2 への切り替えで約 `22 fps` から約 `45 fps` へ改善済み。
+- `h264_qsv` の `video_encode_write` は平均 `0.5 ms/frame` 前後で、主ボトルネックではない。
+- 一番大きいのは AviUtl2 からの `func_get_video` 取得時間。
+- 次点は YUY2 から encoder 入力形式、主に `nv12`、への `sws_scale` 変換。
+- 上下反転は問題ないことを確認済み。
+- 音声と画質は未確認。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `OUTPUT_VIDEO_BUFFER_COUNT` を `16` から `8` に戻した。
+  - 前回実測では `buffer=16` は `buffer=8` より速くならず、むしろ少し遅かったため。
+- `Plugin_Output\FFmpegOutputPerfLog.pas`
+  - 最終集計に `dominant_stage=...` を追加。
+  - 各 stage 行に `pct=...` を追加し、総時間に対する割合を出すようにした。
+
+確認:
+
+- Win64 Debug ビルド成功。
+- 警告 0。
+- エラー 0。
+- post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` を更新済み。
+
+次の実機確認:
+
+- AviUtl2 を再起動して同じ素材で再出力する。
+- `.perf.log` に `buffer video=8 audio=16` が出ることを確認する。
+- `.perf.log` の `dominant_stage` を見る。
+  - `dominant_stage=get_video` なら、AviUtl2 側のフレーム取得/入力デコード待ちが主因。
+  - `dominant_stage=video_convert` なら、YUY2 -> `nv12` / `yuv420p` 変換が主因。
+  - `dominant_stage=video_encode_write` なら、encoder / mux 側が主因。
+- 音声確認用に、音声あり素材で `get_audio` / `audio_convert` / `audio_encode_write` の `count` と `total_ms` が出ることを確認する。
+- 画質確認用に、YUY2 出力後の色、上下、音ズレ、ブロックノイズ、ビットレート設定の反映を確認する。
+

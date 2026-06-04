@@ -23,7 +23,7 @@ uses
 
 const
   OUTPUT_TEST_FORMAT_PCM16 = 1; // AviUtl2へ要求するPCM16音声format
-  OUTPUT_VIDEO_BUFFER_COUNT = 16; // AviUtl2のvideo先読みbuffer数
+  OUTPUT_VIDEO_BUFFER_COUNT = 8; // AviUtl2のvideo先読みbuffer数
   OUTPUT_AUDIO_BUFFER_COUNT = 16; // AviUtl2のaudio先読みbuffer数
   AUDIO_ENCODER_FRAME_SAMPLES = 1024; // AACへ渡す1frameあたりのsample数
   AV_SAMPLE_FMT_FLTP = 8; // FFmpegのAAC encoder入力sample format

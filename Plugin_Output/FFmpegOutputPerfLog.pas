@@ -36,7 +36,8 @@ type
     FStats: array[TOutputPerfStage] of TOutputPerfStageStats; // stage別統計
     FLastFrameLog: Integer; // 最後に途中経過を出したframe
     procedure WriteLine(const Text: string);
-    procedure WriteStageSummary(Stage: TOutputPerfStage);
+    procedure WriteStageSummary(Stage: TOutputPerfStage; TotalMs: Double);
+    procedure WriteBottleneckSummary(TotalMs: Double);
   public
     constructor Create(const SaveFileName: string; Width, Height, TotalFrames: Integer;
       const VideoEncoder, PixelFormatName, VideoInputName: string; VideoBufferCount,
@@ -193,11 +194,46 @@ begin
 end;
 
 // stage別の最終集計を書く。
-procedure TOutputPerfLogger.WriteStageSummary(Stage: TOutputPerfStage);
+procedure TOutputPerfLogger.WriteStageSummary(Stage: TOutputPerfStage; TotalMs: Double);
+var
+  Percent: Double;
 begin
-  WriteLine(Format('%s count=%d avg_ms=%.3f max_ms=%.3f total_ms=%.3f',
+  if TotalMs > 0 then
+    Percent := FStats[Stage].TotalMs * 100.0 / TotalMs
+  else
+    Percent := 0;
+
+  WriteLine(Format('%s count=%d avg_ms=%.3f max_ms=%.3f total_ms=%.3f pct=%.1f',
     [OutputPerfStageName(Stage), FStats[Stage].Count, FStats[Stage].AverageMs,
-     FStats[Stage].MaxMs, FStats[Stage].TotalMs]));
+     FStats[Stage].MaxMs, FStats[Stage].TotalMs, Percent]));
+end;
+
+// 最も時間を使ったstageを1行で出し、次の調査先を見つけやすくする。
+procedure TOutputPerfLogger.WriteBottleneckSummary(TotalMs: Double);
+var
+  Stage: TOutputPerfStage;
+  DominantStage: TOutputPerfStage;
+  DominantMs: Double;
+  DominantPercent: Double;
+begin
+  DominantStage := Low(TOutputPerfStage);
+  DominantMs := 0;
+  for Stage := Low(TOutputPerfStage) to High(TOutputPerfStage) do
+  begin
+    if FStats[Stage].TotalMs > DominantMs then
+    begin
+      DominantMs := FStats[Stage].TotalMs;
+      DominantStage := Stage;
+    end;
+  end;
+
+  if TotalMs > 0 then
+    DominantPercent := DominantMs * 100.0 / TotalMs
+  else
+    DominantPercent := 0;
+
+  WriteLine(Format('dominant_stage=%s total_ms=%.3f pct=%.1f',
+    [OutputPerfStageName(DominantStage), DominantMs, DominantPercent]));
 end;
 
 // 出力完了時の総時間とstage別集計を書く。
@@ -218,8 +254,9 @@ begin
   WriteLine('');
   WriteLine(Format('finish status=%s encoded_frames=%d total_ms=%.3f avg_fps=%.3f',
     [Status, EncodedFrameCount, TotalMs, AverageFps]));
+  WriteBottleneckSummary(TotalMs);
   for Stage := Low(TOutputPerfStage) to High(TOutputPerfStage) do
-    WriteStageSummary(Stage);
+    WriteStageSummary(Stage, TotalMs);
   WriteLine('');
 end;
 
