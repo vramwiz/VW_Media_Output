@@ -128,14 +128,16 @@ begin
   end;
 end;
 
-// encoderから出てきたpacketをmuxerへ書き込む。
-function ReceiveAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
-  Stream: PAVStream; Packet: PAVPacket; out ErrorMessage: string): Boolean;
+// encoderから出てきたpacketをmuxerへ書き込み、実際に進捗があったか返す。
+function ReceiveAndWritePacketsWithCount(FormatContext: PAVFormatContext;
+  CodecContext: PAVCodecContext; Stream: PAVStream; Packet: PAVPacket;
+  out PacketCount: Integer; out ErrorMessage: string): Boolean;
 var
   Code: Integer;
   CodecPublic: PAVCodecContextPublic;
 begin
   Result := False;
+  PacketCount := 0;
   CodecPublic := PAVCodecContextPublic(CodecContext);
 
   while True do
@@ -155,9 +157,20 @@ begin
     TFFmpegApi.av_packet_unref(Packet);
     if not CheckFFmpeg(Code, 'av_interleaved_write_frame', ErrorMessage) then
       Exit;
+    Inc(PacketCount);
   end;
 
   Result := True;
+end;
+
+// encoderから出てきたpacketをmuxerへ書き込む。
+function ReceiveAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
+  Stream: PAVStream; Packet: PAVPacket; out ErrorMessage: string): Boolean;
+var
+  PacketCount: Integer;
+begin
+  Result := ReceiveAndWritePacketsWithCount(FormatContext, CodecContext, Stream,
+    Packet, PacketCount, ErrorMessage);
 end;
 
 // frame送信とpacket回収をまとめて行う。Frame=nilでflushする。
@@ -165,6 +178,7 @@ function SendFrameAndWritePackets(FormatContext: PAVFormatContext; CodecContext:
   Stream: PAVStream; Packet: PAVPacket; Frame: PAVFrame; out ErrorMessage: string): Boolean;
 var
   Code: Integer;
+  PacketCount: Integer;
 begin
   Result := False;
   while True do
@@ -172,8 +186,14 @@ begin
     Code := avcodec_send_frame(CodecContext, Frame);
     if Code = AVERROR_EAGAIN then
     begin
-      if not ReceiveAndWritePackets(FormatContext, CodecContext, Stream, Packet, ErrorMessage) then
+      if not ReceiveAndWritePacketsWithCount(FormatContext, CodecContext, Stream,
+        Packet, PacketCount, ErrorMessage) then
         Exit;
+      if PacketCount <= 0 then
+      begin
+        ErrorMessage := 'avcodec_send_frame returned EAGAIN, but avcodec_receive_packet produced no packet.';
+        Exit;
+      end;
       Continue;
     end;
     if Code < 0 then
@@ -281,6 +301,8 @@ var
   ConvertedSamples: Integer;
   Code: Integer;
   StageStopwatch: TStopwatch;
+  LastAudioTraceSample: Integer;
+  ChannelIndex: Integer;
 begin
   Result := False;
   Frame := nil;
@@ -288,6 +310,10 @@ begin
   FillChar(InLayout, SizeOf(InLayout), 0);
   FillChar(OutLayout, SizeOf(OutLayout), 0);
   SampleStart := 0;
+  LastAudioTraceSample := 0;
+  if PerfLogger <> nil then
+    PerfLogger.Trace(Format('audio_encode_begin total_samples=%d rate=%d ch=%d',
+      [oip^.audio_n, Settings.Audio.SampleRate, Settings.Audio.Channels]));
 
   TFFmpegApi.av_channel_layout_default(@InLayout, Settings.Audio.Channels);
   TFFmpegApi.av_channel_layout_default(@OutLayout, Settings.Audio.Channels);
@@ -321,7 +347,12 @@ begin
     while SampleStart < oip^.audio_n do
     begin
       if Assigned(oip^.func_is_abort) and oip^.func_is_abort then
+      begin
+        if PerfLogger <> nil then
+          PerfLogger.Trace(Format('audio_abort_requested sample=%d/%d',
+            [SampleStart, oip^.audio_n]));
         Break;
+      end;
 
       SamplesToRead := Min(AUDIO_ENCODER_FRAME_SAMPLES, oip^.audio_n - SampleStart);
       StageStopwatch := TStopwatch.StartNew;
@@ -330,7 +361,12 @@ begin
       if PerfLogger <> nil then
         PerfLogger.Add(opsGetAudio, StopwatchElapsedMs(StageStopwatch));
       if (AudioData = nil) or (Readed <= 0) then
+      begin
+        if PerfLogger <> nil then
+          PerfLogger.Trace(Format('audio_read_end sample=%d requested=%d readed=%d data_nil=%s',
+            [SampleStart, SamplesToRead, Readed, BoolToStr(AudioData = nil, True)]));
         Break;
+      end;
 
       StageStopwatch := TStopwatch.StartNew;
       Code := av_frame_make_writable(Frame);
@@ -345,8 +381,8 @@ begin
       FillChar(InData, SizeOf(InData), 0);
       FillChar(OutData, SizeOf(OutData), 0);
       InData[0] := PByte(AudioData);
-      OutData[0] := Frame^.data[0];
-      OutData[1] := Frame^.data[1];
+      for ChannelIndex := 0 to Min(Settings.Audio.Channels, Length(OutData)) - 1 do
+        OutData[ChannelIndex] := Frame^.data[ChannelIndex];
       StageStopwatch := TStopwatch.StartNew;
       ConvertedSamples := TFFmpegApi.swr_convert(SwrContext, @OutData[0], Readed,
         @InData[0], Readed);
@@ -369,8 +405,18 @@ begin
       if not Result then
         Exit;
       Inc(SampleStart, Readed);
+      if (PerfLogger <> nil) and
+        ((SampleStart - LastAudioTraceSample) >= Settings.Audio.SampleRate * 5) then
+      begin
+        LastAudioTraceSample := SampleStart;
+        PerfLogger.Trace(Format('audio_progress sample=%d/%d',
+          [SampleStart, oip^.audio_n]));
+      end;
     end;
 
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('audio_flush_begin sample=%d/%d',
+        [SampleStart, oip^.audio_n]));
     StageStopwatch := TStopwatch.StartNew;
     Result := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
       Packet, nil, ErrorMessage);
@@ -379,6 +425,9 @@ begin
       PerfLogger.Add(opsAudioEncodeWrite, StopwatchElapsedMs(StageStopwatch));
     if not Result then
       Exit;
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('audio_flush_end elapsed_ms=%.3f',
+        [StopwatchElapsedMs(StageStopwatch)]));
 
     Result := True;
   finally
@@ -467,14 +516,23 @@ begin
   if OUTPUT_PERF_LOG_ENABLED then
     PerfLogger := TOutputPerfLogger.Create(string(oip^.savefile), oip^.w, oip^.h, oip^.n,
       string(Settings.Video.EncoderName), Settings.Video.PixelFormatName,
-      OutputVideoInputName, OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT)
+      OutputVideoInputName, OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT,
+      Settings.Audio.Enabled, string(Settings.Audio.EncoderName), Settings.Audio.BitRate,
+      EffectiveSettings.Audio.SampleRate, EffectiveSettings.Audio.Channels)
   else
     PerfLogger := nil;
 
   try
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('encode_begin output_info w=%d h=%d frames=%d rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
+        [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
+         oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
+
     Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
     if not CheckFFmpeg(Code, 'avformat_alloc_output_context2', ErrorMessage) then
       Exit;
+    if PerfLogger <> nil then
+      PerfLogger.Trace('avformat_alloc_output_context2 ok');
 
     Codec := avcodec_find_encoder_by_name(PAnsiChar(Settings.Video.EncoderName));
     if Codec = nil then
@@ -515,6 +573,8 @@ begin
       ErrorMessage := VideoEncoderOpenErrorMessage(Code, Settings);
       Exit;
     end;
+    if PerfLogger <> nil then
+      PerfLogger.Trace('video avcodec_open2 ok');
 
     Stream := avformat_new_stream(FormatContext, nil);
     if Stream = nil then
@@ -533,15 +593,22 @@ begin
     begin
       if not OpenAudioEncoder(FormatContext, EffectiveSettings, AudioCodecContext, AudioStream, ErrorMessage) then
         Exit;
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format('audio encoder opened sample_rate=%d channels=%d total_samples=%d',
+          [EffectiveSettings.Audio.SampleRate, EffectiveSettings.Audio.Channels, oip^.audio_n]));
     end;
 
     Code := avio_open(@FormatContext^.pb, PAnsiChar(SaveFileUtf8), AVIO_FLAG_WRITE);
     if not CheckFFmpeg(Code, 'avio_open', ErrorMessage) then
       Exit;
+    if PerfLogger <> nil then
+      PerfLogger.Trace('avio_open ok');
 
     Code := avformat_write_header(FormatContext, nil);
     if not CheckFFmpeg(Code, 'avformat_write_header', ErrorMessage) then
       Exit;
+    if PerfLogger <> nil then
+      PerfLogger.Trace('avformat_write_header ok');
 
     Frame := TFFmpegApi.av_frame_alloc();
     if Frame = nil then
@@ -571,7 +638,11 @@ begin
       Exit;
     end;
     if Assigned(oip^.func_set_buffer_size) then
+    begin
       oip^.func_set_buffer_size(OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('func_set_buffer_size called');
+    end;
 
     TotalStopwatch := TStopwatch.StartNew;
     CurrentFps := 0;
@@ -597,6 +668,9 @@ begin
         if (FrameIndex > 0) or (EncodedFrameCount > 0) then
         begin
           EndOfSource := True;
+          if PerfLogger <> nil then
+            PerfLogger.Trace(Format('video_source_end frame_index=%d encoded_frames=%d',
+              [FrameIndex, EncodedFrameCount]));
           Break;
         end;
         ErrorMessage := 'func_get_video returned nil.';
@@ -673,8 +747,15 @@ begin
         PerfLogger.LogFrame(FrameIndex + 1, oip^.n, StopwatchElapsedMs(FrameStopwatch), AverageFps);
     end;
 
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('video_loop_end frame_index=%d encoded_frames=%d aborted=%s end_of_source=%s fatal=%s',
+        [FrameIndex, EncodedFrameCount, BoolToStr(Aborted, True),
+         BoolToStr(EndOfSource, True), BoolToStr(FatalAfterHeader, True)]));
+
     if EncodedFrameCount > 0 then
     begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('video_flush_begin');
       StageStopwatch := TStopwatch.StartNew;
       Result := SendFrameAndWritePackets(FormatContext, CodecContext, Stream, Packet, nil, ErrorMessage);
       StageStopwatch.Stop;
@@ -682,18 +763,31 @@ begin
         PerfLogger.Add(opsVideoEncodeWrite, StopwatchElapsedMs(StageStopwatch));
       if not Result then
         FatalAfterHeader := True;
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format('video_flush_end result=%s elapsed_ms=%.3f fatal=%s',
+          [BoolToStr(Result, True), StopwatchElapsedMs(StageStopwatch),
+           BoolToStr(FatalAfterHeader, True)]));
     end;
 
     if (AudioCodecContext <> nil) and (not Aborted) and (not FatalAfterHeader) then
     begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('audio_encode_call_begin');
       if not EncodeAudioFromCallbacks(FormatContext, AudioCodecContext, AudioStream,
         Packet, oip, EffectiveSettings, PerfLogger, ErrorMessage) then
         FatalAfterHeader := True;
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format('audio_encode_call_end fatal=%s error="%s"',
+          [BoolToStr(FatalAfterHeader, True), ErrorMessage]));
     end;
 
+    if PerfLogger <> nil then
+      PerfLogger.Trace('av_write_trailer_begin');
     Code := av_write_trailer(FormatContext);
     if not CheckFFmpeg(Code, 'av_write_trailer', ErrorMessage) then
       Exit;
+    if PerfLogger <> nil then
+      PerfLogger.Trace('av_write_trailer_end');
 
     if EndOfSource and Assigned(OnProgress) then
       OnProgress(FrameIndex, FrameIndex, CurrentFps, AverageFps, MinFps, MaxFps);
@@ -724,20 +818,66 @@ begin
       PerfLogFinished := True;
     end;
   finally
+    if PerfLogger <> nil then
+      PerfLogger.Trace('cleanup_begin');
     if SwsContext <> nil then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_sws_free_begin');
       TFFmpegApi.sws_freeContext(SwsContext);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_sws_free_end');
+    end;
     if Packet <> nil then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_packet_free_begin');
       TFFmpegApi.av_packet_free(@Packet);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_packet_free_end');
+    end;
     if Frame <> nil then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_frame_free_begin');
       TFFmpegApi.av_frame_free(@Frame);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_frame_free_end');
+    end;
     if AudioCodecContext <> nil then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_audio_codec_free_begin');
       TFFmpegApi.avcodec_free_context(@AudioCodecContext);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_audio_codec_free_end');
+    end;
     if CodecContext <> nil then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_video_codec_free_begin');
       TFFmpegApi.avcodec_free_context(@CodecContext);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_video_codec_free_end');
+    end;
     if (FormatContext <> nil) and (FormatContext^.pb <> nil) then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_avio_close_begin');
       avio_closep(@FormatContext^.pb);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_avio_close_end');
+    end;
     if FormatContext <> nil then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_format_free_begin');
       avformat_free_context(FormatContext);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('cleanup_format_free_end');
+    end;
+    if PerfLogger <> nil then
+      PerfLogger.Trace('cleanup_end');
     if PerfLogger <> nil then
     begin
       if not PerfLogFinished then

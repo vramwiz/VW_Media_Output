@@ -41,9 +41,11 @@ type
   public
     constructor Create(const SaveFileName: string; Width, Height, TotalFrames: Integer;
       const VideoEncoder, PixelFormatName, VideoInputName: string; VideoBufferCount,
-      AudioBufferCount: Integer);
+      AudioBufferCount: Integer; AudioEnabled: Boolean; const AudioEncoder: string;
+      AudioBitRate, AudioSampleRate, AudioChannels: Integer);
     destructor Destroy; override;
     procedure Add(Stage: TOutputPerfStage; ElapsedMs: Double);
+    procedure Trace(const Text: string);
     procedure LogFrame(FrameIndex, TotalFrames: Integer; FrameMs, AverageFps: Double);
     procedure Finish(EncodedFrameCount: Integer; TotalMs: Double; const Status: string);
   end;
@@ -118,7 +120,8 @@ end;
 // log fileを開き、出力条件のheaderを書く。
 constructor TOutputPerfLogger.Create(const SaveFileName: string; Width, Height,
   TotalFrames: Integer; const VideoEncoder, PixelFormatName, VideoInputName: string;
-  VideoBufferCount, AudioBufferCount: Integer);
+  VideoBufferCount, AudioBufferCount: Integer; AudioEnabled: Boolean;
+  const AudioEncoder: string; AudioBitRate, AudioSampleRate, AudioChannels: Integer);
 var
   LogPath: string;
   LogDir: string;
@@ -143,6 +146,9 @@ begin
   WriteLine(Format('size=%dx%d frames=%d encoder=%s pixel=%s input=%s',
     [Width, Height, TotalFrames, VideoEncoder, PixelFormatName, VideoInputName]));
   WriteLine(Format('buffer video=%d audio=%d', [VideoBufferCount, AudioBufferCount]));
+  WriteLine(Format('audio enabled=%s encoder=%s bitrate=%d sample_rate=%d channels=%d',
+    [BoolToStr(AudioEnabled, True), AudioEncoder, AudioBitRate, AudioSampleRate,
+     AudioChannels]));
   WriteLine(Format('frame_log_interval=%d', [OUTPUT_PERF_LOG_EVERY_N_FRAMES]));
   WriteLine('');
 end;
@@ -173,6 +179,13 @@ begin
   if not FOpened then
     Exit;
   FStats[Stage].Add(ElapsedMs);
+end;
+
+// 終了処理のどこで止まったか追えるよう、即時flushされるbreadcrumbを出す。
+procedure TOutputPerfLogger.Trace(const Text: string);
+begin
+  WriteLine(Format('trace time=%s %s',
+    [FormatDateTime('hh:nn:ss.zzz', Now), Text]));
 end;
 
 // 指定間隔ごとにフレーム単位の途中経過を書く。
