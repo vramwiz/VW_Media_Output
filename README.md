@@ -187,3 +187,7 @@ C:\ProgramData\aviutl2\Plugin\VW_Media_Output
 このプロジェクトは GNU General Public License v3.0 で公開しています。
 
 詳細は [LICENSE](LICENSE) を参照してください。
+
+リリース zip には FFmpeg の共有ライブラリを同梱しています。
+同梱している FFmpeg は GPL v3 の `8.1.1-full_build-www.gyan.dev` です。
+配布物に含まれる `THIRD_PARTY_NOTICES.txt`、`FFmpeg-LICENSE.txt`、`FFmpeg-README.txt` も確認してください。

@@ -32,6 +32,11 @@ if errorlevel 8 (
   exit /b 1
 )
 
+copy /Y "%~dp0..\LICENSE" "%TEMP_DIR%\LICENSE.txt" >nul
+copy /Y "%~dp0THIRD_PARTY_NOTICES.txt" "%TEMP_DIR%\THIRD_PARTY_NOTICES.txt" >nul
+copy /Y "%~dp0FFmpeg-LICENSE.txt" "%TEMP_DIR%\FFmpeg-LICENSE.txt" >nul
+copy /Y "%~dp0FFmpeg-README.txt" "%TEMP_DIR%\FFmpeg-README.txt" >nul
+
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Compress-Archive -Path '%TEMP_DIR%' -DestinationPath '%ZIP_PATH%' -Force"
 

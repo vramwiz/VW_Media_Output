@@ -4,7 +4,15 @@ __history/
 *.local 
 *.identcache 
 *.exe 
+*.bat
+!Setup/*.bat
 *.dll 
+*.zip
+*.rsm
+*.auo2
+Setup/*.zip
+Setup/VW_Media_Output/
+!Setup/*.txt
 *.map 
 *.tds 
 *.dsk 

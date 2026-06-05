@@ -57,6 +57,13 @@ begin
   CurrentAborted := True;
 end;
 
+function OutputAbortRequested(oip: POutputInfo): Boolean;
+begin
+  Result := CurrentAborted;
+  if (not Result) and (oip <> nil) and Assigned(oip^.func_is_abort) then
+    Result := oip^.func_is_abort;
+end;
+
 // 出力に必要なFFmpeg関数をDLLから遅延取得する。
 procedure LoadOutputApi;
 begin
@@ -346,12 +353,14 @@ begin
 
     while SampleStart < oip^.audio_n do
     begin
-      if Assigned(oip^.func_is_abort) and oip^.func_is_abort then
+      if OutputAbortRequested(oip) then
       begin
+        CurrentAborted := True;
+        ErrorMessage := 'Output was stopped.';
         if PerfLogger <> nil then
           PerfLogger.Trace(Format('audio_abort_requested sample=%d/%d',
             [SampleStart, oip^.audio_n]));
-        Break;
+        Exit;
       end;
 
       SamplesToRead := Min(AUDIO_ENCODER_FRAME_SAMPLES, oip^.audio_n - SampleStart);
@@ -652,8 +661,9 @@ begin
     for FrameIndex := 0 to oip^.n - 1 do
     begin
       FrameStopwatch := TStopwatch.StartNew;
-      if Assigned(oip^.func_is_abort) and oip^.func_is_abort then
+      if OutputAbortRequested(oip) then
       begin
+        CurrentAborted := True;
         Aborted := True;
         Break;
       end;
@@ -752,7 +762,14 @@ begin
         [FrameIndex, EncodedFrameCount, BoolToStr(Aborted, True),
          BoolToStr(EndOfSource, True), BoolToStr(FatalAfterHeader, True)]));
 
-    if EncodedFrameCount > 0 then
+    if Aborted or OutputAbortRequested(oip) then
+    begin
+      CurrentAborted := True;
+      Aborted := True;
+      if PerfLogger <> nil then
+        PerfLogger.Trace('output_abort_skip_flush_trailer');
+    end
+    else if EncodedFrameCount > 0 then
     begin
       if PerfLogger <> nil then
         PerfLogger.Trace('video_flush_begin');
@@ -775,26 +792,36 @@ begin
         PerfLogger.Trace('audio_encode_call_begin');
       if not EncodeAudioFromCallbacks(FormatContext, AudioCodecContext, AudioStream,
         Packet, oip, EffectiveSettings, PerfLogger, ErrorMessage) then
-        FatalAfterHeader := True;
+      begin
+        if OutputAbortRequested(oip) or CurrentAborted then
+          Aborted := True
+        else
+          FatalAfterHeader := True;
+      end;
       if PerfLogger <> nil then
         PerfLogger.Trace(Format('audio_encode_call_end fatal=%s error="%s"',
           [BoolToStr(FatalAfterHeader, True), ErrorMessage]));
     end;
 
-    if PerfLogger <> nil then
-      PerfLogger.Trace('av_write_trailer_begin');
-    Code := av_write_trailer(FormatContext);
-    if not CheckFFmpeg(Code, 'av_write_trailer', ErrorMessage) then
-      Exit;
-    if PerfLogger <> nil then
-      PerfLogger.Trace('av_write_trailer_end');
+    if not Aborted then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('av_write_trailer_begin');
+      Code := av_write_trailer(FormatContext);
+      if not CheckFFmpeg(Code, 'av_write_trailer', ErrorMessage) then
+        Exit;
+      if PerfLogger <> nil then
+        PerfLogger.Trace('av_write_trailer_end');
+    end
+    else if PerfLogger <> nil then
+      PerfLogger.Trace('av_write_trailer_skipped_by_abort');
 
     if EndOfSource and Assigned(OnProgress) then
       OnProgress(FrameIndex, FrameIndex, CurrentFps, AverageFps, MinFps, MaxFps);
 
     if Aborted then
     begin
-      ErrorMessage := 'Output was stopped. Partial MP4 was finalized.';
+      ErrorMessage := 'Output was stopped.';
       PerfStatus := 'aborted';
       Result := False;
     end

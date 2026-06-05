@@ -1,0 +1,51 @@
+Third-party notices for VW_Media_Output
+=======================================
+
+VW_Media_Output is distributed under the GNU General Public License
+version 3. See LICENSE.txt.
+
+This release package includes FFmpeg shared libraries.
+
+FFmpeg build
+------------
+
+Name:
+  FFmpeg
+
+Build:
+  ffmpeg version 8.1.1-full_build-www.gyan.dev
+
+License:
+  GNU General Public License version 3
+
+Reason:
+  The bundled FFmpeg build was built with --enable-gpl and --enable-version3.
+
+Included FFmpeg DLLs:
+  avcodec-62.dll
+  avdevice-62.dll
+  avfilter-11.dll
+  avformat-62.dll
+  avutil-60.dll
+  swresample-6.dll
+  swscale-9.dll
+
+FFmpeg source code:
+  https://github.com/FFmpeg/FFmpeg/commit/239f2c733d
+
+FFmpeg project:
+  https://ffmpeg.org/
+
+Windows build provider:
+  https://www.gyan.dev/ffmpeg/builds/
+
+See also:
+  FFmpeg-LICENSE.txt
+  FFmpeg-README.txt
+
+Project source code
+-------------------
+
+The corresponding source code for VW_Media_Output is available from:
+
+  https://github.com/vramwiz/VW_Media_Output
