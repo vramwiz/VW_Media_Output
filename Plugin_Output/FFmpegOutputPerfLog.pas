@@ -1,4 +1,4 @@
-﻿unit FFmpegOutputPerfLog;
+unit FFmpegOutputPerfLog;
 
 interface
 

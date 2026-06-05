@@ -1,4 +1,4 @@
-﻿unit FFmpegOutputEncoder;
+unit FFmpegOutputEncoder;
 
 interface
 
