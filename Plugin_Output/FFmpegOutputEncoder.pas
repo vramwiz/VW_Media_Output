@@ -1,4 +1,4 @@
-unit FFmpegOutputEncoder;
+﻿unit FFmpegOutputEncoder;
 
 interface
 
@@ -26,6 +26,7 @@ const
   OUTPUT_VIDEO_BUFFER_COUNT = 8; // AviUtl2のvideo先読みbuffer数
   OUTPUT_AUDIO_BUFFER_COUNT = 16; // AviUtl2のaudio先読みbuffer数
   AUDIO_ENCODER_FRAME_SAMPLES = 1024; // AACへ渡す1frameあたりのsample数
+  AUDIO_READ_CHUNK_SAMPLES = AUDIO_ENCODER_FRAME_SAMPLES * 16; // AviUtl2からまとめて取得するsample数
   AV_SAMPLE_FMT_FLTP = 8; // FFmpegのAAC encoder入力sample format
 
 var
@@ -103,6 +104,30 @@ begin
   Result := ResultCode >= 0;
   if not Result then
     ErrorMessage := Operation + ': ' + TFFmpegApi.ErrorText(ResultCode);
+end;
+
+function Pcm16MaxAbs(Data: Pointer; SampleCount, Channels: Integer): Integer;
+var
+  Values: PSmallInt;
+  Index: Integer;
+  TotalValues: Integer;
+  Value: Integer;
+begin
+  Result := 0;
+  if (Data = nil) or (SampleCount <= 0) or (Channels <= 0) then
+    Exit;
+
+  Values := PSmallInt(Data);
+  TotalValues := SampleCount * Channels;
+  for Index := 0 to TotalValues - 1 do
+  begin
+    Value := Values^;
+    if Value < 0 then
+      Value := -Value;
+    if Value > Result then
+      Result := Value;
+    Inc(Values);
+  end;
 end;
 
 function VideoEncoderOpenErrorMessage(ResultCode: Integer;
@@ -289,10 +314,154 @@ begin
   end;
 end;
 
-// AviUtl2のfunc_get_audioからPCM16を受け取り、AACへ変換して書く。
-function EncodeAudioFromCallbacks(FormatContext: PAVFormatContext; AudioCodecContext: PAVCodecContext;
+// AviUtl2のfunc_get_audioからPCM16を指定sample位置まで先読みする。
+function PrefetchAudioUntilSample(oip: POutputInfo; const Settings: TOutputTestSettings;
+  PerfLogger: TOutputPerfLogger; var AudioPcm: TBytes; var AudioSampleCount: Integer;
+  TargetSample: Integer;
+  out ErrorMessage: string): Boolean;
+var
+  SampleStart: Integer;
+  SamplesToRead: Integer;
+  Readed: Integer;
+  AudioData: Pointer;
+  StageStopwatch: TStopwatch;
+  LastAudioTraceSample: Integer;
+  BytesPerSample: Integer;
+  TotalBytes: Int64;
+  DestOffset: Int64;
+  CopyBytes: Int64;
+  MaxAbs: Integer;
+begin
+  Result := False;
+  LastAudioTraceSample := 0;
+  BytesPerSample := Settings.Audio.Channels * SizeOf(SmallInt);
+
+  if (oip = nil) or (oip^.audio_n <= 0) or (BytesPerSample <= 0) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  TargetSample := EnsureRange(TargetSample, 0, oip^.audio_n);
+  if AudioSampleCount >= TargetSample then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  TotalBytes := Int64(oip^.audio_n) * BytesPerSample;
+  if TotalBytes > MaxInt then
+  begin
+    ErrorMessage := Format('audio prefetch buffer is too large: %d bytes', [TotalBytes]);
+    Exit;
+  end;
+  SetLength(AudioPcm, Integer(TotalBytes));
+  SampleStart := AudioSampleCount;
+
+  if PerfLogger <> nil then
+    PerfLogger.Trace(Format('audio_prefetch_begin sample=%d target=%d total_samples=%d rate=%d ch=%d bytes=%d',
+      [SampleStart, TargetSample, oip^.audio_n, Settings.Audio.SampleRate,
+       Settings.Audio.Channels, TotalBytes]));
+
+  while SampleStart < TargetSample do
+  begin
+    if OutputAbortRequested(oip) then
+    begin
+      CurrentAborted := True;
+      ErrorMessage := 'Output was stopped.';
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format('audio_prefetch_abort_requested sample=%d/%d',
+          [SampleStart, oip^.audio_n]));
+      Exit;
+    end;
+
+    SamplesToRead := Min(AUDIO_READ_CHUNK_SAMPLES, TargetSample - SampleStart);
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('audio_prefetch_read_begin sample=%d length=%d',
+        [SampleStart, SamplesToRead]));
+    StageStopwatch := TStopwatch.StartNew;
+    AudioData := oip^.func_get_audio(SampleStart, SamplesToRead, @Readed, OUTPUT_TEST_FORMAT_PCM16);
+    StageStopwatch.Stop;
+    if PerfLogger <> nil then
+    begin
+      PerfLogger.Add(opsGetAudio, StopwatchElapsedMs(StageStopwatch));
+      PerfLogger.Trace(Format('audio_prefetch_read_end sample=%d requested=%d readed=%d elapsed_ms=%.3f data_nil=%s',
+        [SampleStart, SamplesToRead, Readed, StopwatchElapsedMs(StageStopwatch),
+         BoolToStr(AudioData = nil, True)]));
+    end;
+
+    if OutputAbortRequested(oip) then
+    begin
+      CurrentAborted := True;
+      ErrorMessage := 'Output was stopped.';
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format('audio_prefetch_abort_requested_after_read sample=%d/%d',
+          [SampleStart, oip^.audio_n]));
+      Exit;
+    end;
+
+    if Readed > SamplesToRead then
+      Readed := SamplesToRead;
+    if (AudioData = nil) or (Readed <= 0) then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format('audio_prefetch_short_read sample=%d requested=%d readed=%d data_nil=%s',
+          [SampleStart, SamplesToRead, Readed, BoolToStr(AudioData = nil, True)]));
+      Break;
+    end;
+
+    DestOffset := Int64(SampleStart) * BytesPerSample;
+    CopyBytes := Int64(Readed) * BytesPerSample;
+    MaxAbs := Pcm16MaxAbs(AudioData, Readed, Settings.Audio.Channels);
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('audio_prefetch_chunk_stats sample=%d readed=%d max_abs=%d silent=%s',
+        [SampleStart, Readed, MaxAbs, BoolToStr(MaxAbs = 0, True)]));
+    Move(PByte(AudioData)^, AudioPcm[Integer(DestOffset)], Integer(CopyBytes));
+    Inc(SampleStart, Readed);
+    AudioSampleCount := SampleStart;
+
+    if (PerfLogger <> nil) and
+      ((SampleStart - LastAudioTraceSample) >= Settings.Audio.SampleRate * 5) then
+    begin
+      LastAudioTraceSample := SampleStart;
+      PerfLogger.Trace(Format('audio_prefetch_progress sample=%d/%d',
+        [SampleStart, oip^.audio_n]));
+    end;
+  end;
+
+  AudioSampleCount := SampleStart;
+  if PerfLogger <> nil then
+    PerfLogger.Trace(Format('audio_prefetch_end samples=%d/%d target=%d',
+      [AudioSampleCount, oip^.audio_n, TargetSample]));
+  Result := True;
+end;
+
+// 映像フレーム位置に対応する音声sample位置を返す。
+function AudioTargetSampleForFrame(oip: POutputInfo; FrameCount: Integer): Integer;
+var
+  Target: Int64;
+begin
+  Result := 0;
+  if (oip = nil) or (oip^.audio_n <= 0) or (oip^.audio_rate <= 0) or
+    (oip^.rate <= 0) or (oip^.scale <= 0) then
+    Exit;
+  if FrameCount >= oip^.n then
+  begin
+    Result := oip^.audio_n;
+    Exit;
+  end;
+
+  Target := (Int64(FrameCount) * Int64(oip^.audio_rate) * Int64(oip^.scale) +
+    oip^.rate - 1) div oip^.rate;
+  if Target > oip^.audio_n then
+    Target := oip^.audio_n;
+  Result := Integer(Target);
+end;
+
+// 先読み済みPCM16をAACへ変換して書く。
+function EncodeAudioFromPcmBuffer(FormatContext: PAVFormatContext; AudioCodecContext: PAVCodecContext;
   AudioStream: PAVStream; Packet: PAVPacket; oip: POutputInfo; const Settings: TOutputTestSettings;
-  PerfLogger: TOutputPerfLogger; out ErrorMessage: string): Boolean;
+  AudioPcm: PByte; AudioSampleCount: Integer; PerfLogger: TOutputPerfLogger;
+  out ErrorMessage: string): Boolean;
 var
   Frame: PAVFrame;
   AudioFrame: PAVFrameAudioPublic;
@@ -303,13 +472,17 @@ var
   OutData: array[0..7] of Pointer;
   SampleStart: Integer;
   SamplesToRead: Integer;
-  Readed: Integer;
   AudioData: Pointer;
   ConvertedSamples: Integer;
   Code: Integer;
   StageStopwatch: TStopwatch;
   LastAudioTraceSample: Integer;
   ChannelIndex: Integer;
+  EncodeOk: Boolean;
+  AudioOffset: Integer;
+  EncodeSamples: Integer;
+  AudioBaseSample: Integer;
+  BytesPerSample: Integer;
 begin
   Result := False;
   Frame := nil;
@@ -318,9 +491,10 @@ begin
   FillChar(OutLayout, SizeOf(OutLayout), 0);
   SampleStart := 0;
   LastAudioTraceSample := 0;
+  BytesPerSample := Settings.Audio.Channels * SizeOf(SmallInt);
   if PerfLogger <> nil then
-    PerfLogger.Trace(Format('audio_encode_begin total_samples=%d rate=%d ch=%d',
-      [oip^.audio_n, Settings.Audio.SampleRate, Settings.Audio.Channels]));
+    PerfLogger.Trace(Format('audio_encode_begin total_samples=%d rate=%d ch=%d source=prefetched',
+      [AudioSampleCount, Settings.Audio.SampleRate, Settings.Audio.Channels]));
 
   TFFmpegApi.av_channel_layout_default(@InLayout, Settings.Audio.Channels);
   TFFmpegApi.av_channel_layout_default(@OutLayout, Settings.Audio.Channels);
@@ -351,81 +525,97 @@ begin
     if not CheckFFmpeg(Code, 'audio av_frame_get_buffer', ErrorMessage) then
       Exit;
 
-    while SampleStart < oip^.audio_n do
+    while SampleStart < AudioSampleCount do
     begin
       if OutputAbortRequested(oip) then
       begin
         CurrentAborted := True;
+        Result := False;
         ErrorMessage := 'Output was stopped.';
         if PerfLogger <> nil then
           PerfLogger.Trace(Format('audio_abort_requested sample=%d/%d',
-            [SampleStart, oip^.audio_n]));
+            [SampleStart, AudioSampleCount]));
         Exit;
       end;
 
-      SamplesToRead := Min(AUDIO_ENCODER_FRAME_SAMPLES, oip^.audio_n - SampleStart);
-      StageStopwatch := TStopwatch.StartNew;
-      AudioData := oip^.func_get_audio(SampleStart, SamplesToRead, @Readed, OUTPUT_TEST_FORMAT_PCM16);
-      StageStopwatch.Stop;
-      if PerfLogger <> nil then
-        PerfLogger.Add(opsGetAudio, StopwatchElapsedMs(StageStopwatch));
-      if (AudioData = nil) or (Readed <= 0) then
+      SamplesToRead := Min(AUDIO_READ_CHUNK_SAMPLES, AudioSampleCount - SampleStart);
+      AudioData := Pointer(NativeUInt(AudioPcm) + NativeUInt(SampleStart) * NativeUInt(BytesPerSample));
+
+      AudioBaseSample := SampleStart;
+      AudioOffset := 0;
+      while AudioOffset < SamplesToRead do
       begin
+        if OutputAbortRequested(oip) then
+        begin
+          CurrentAborted := True;
+          Result := False;
+          ErrorMessage := 'Output was stopped.';
+          if PerfLogger <> nil then
+            PerfLogger.Trace(Format('audio_abort_requested_inside_chunk sample=%d/%d',
+              [AudioBaseSample + AudioOffset, AudioSampleCount]));
+          Exit;
+        end;
+
+        EncodeSamples := Min(AUDIO_ENCODER_FRAME_SAMPLES, SamplesToRead - AudioOffset);
+        StageStopwatch := TStopwatch.StartNew;
+        Code := av_frame_make_writable(Frame);
+        StageStopwatch.Stop;
         if PerfLogger <> nil then
-          PerfLogger.Trace(Format('audio_read_end sample=%d requested=%d readed=%d data_nil=%s',
-            [SampleStart, SamplesToRead, Readed, BoolToStr(AudioData = nil, True)]));
-        Break;
+          PerfLogger.Add(opsAudioWritable, StopwatchElapsedMs(StageStopwatch));
+        if not CheckFFmpeg(Code, 'audio av_frame_make_writable', ErrorMessage) then
+        begin
+          Result := False;
+          Exit;
+        end;
+
+        AudioFrame^.nb_samples := EncodeSamples;
+        AudioFrame^.pts := AudioBaseSample + AudioOffset;
+        FillChar(InData, SizeOf(InData), 0);
+        FillChar(OutData, SizeOf(OutData), 0);
+        InData[0] := PByte(NativeUInt(AudioData) +
+          NativeUInt(AudioOffset) * NativeUInt(Settings.Audio.Channels) * SizeOf(SmallInt));
+        for ChannelIndex := 0 to Min(Settings.Audio.Channels, Length(OutData)) - 1 do
+          OutData[ChannelIndex] := Frame^.data[ChannelIndex];
+        StageStopwatch := TStopwatch.StartNew;
+        ConvertedSamples := TFFmpegApi.swr_convert(SwrContext, @OutData[0], EncodeSamples,
+          @InData[0], EncodeSamples);
+        StageStopwatch.Stop;
+        if PerfLogger <> nil then
+          PerfLogger.Add(opsAudioConvert, StopwatchElapsedMs(StageStopwatch));
+        if ConvertedSamples <= 0 then
+        begin
+          Result := False;
+          ErrorMessage := 'audio swr_convert failed.';
+          Exit;
+        end;
+        AudioFrame^.nb_samples := ConvertedSamples;
+
+        StageStopwatch := TStopwatch.StartNew;
+        EncodeOk := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
+          Packet, Frame, ErrorMessage);
+        StageStopwatch.Stop;
+        if PerfLogger <> nil then
+          PerfLogger.Add(opsAudioEncodeWrite, StopwatchElapsedMs(StageStopwatch));
+        if not EncodeOk then
+        begin
+          Result := False;
+          Exit;
+        end;
+        Inc(AudioOffset, EncodeSamples);
       end;
-
-      StageStopwatch := TStopwatch.StartNew;
-      Code := av_frame_make_writable(Frame);
-      StageStopwatch.Stop;
-      if PerfLogger <> nil then
-        PerfLogger.Add(opsAudioWritable, StopwatchElapsedMs(StageStopwatch));
-      if not CheckFFmpeg(Code, 'audio av_frame_make_writable', ErrorMessage) then
-        Exit;
-
-      AudioFrame^.nb_samples := Readed;
-      AudioFrame^.pts := SampleStart;
-      FillChar(InData, SizeOf(InData), 0);
-      FillChar(OutData, SizeOf(OutData), 0);
-      InData[0] := PByte(AudioData);
-      for ChannelIndex := 0 to Min(Settings.Audio.Channels, Length(OutData)) - 1 do
-        OutData[ChannelIndex] := Frame^.data[ChannelIndex];
-      StageStopwatch := TStopwatch.StartNew;
-      ConvertedSamples := TFFmpegApi.swr_convert(SwrContext, @OutData[0], Readed,
-        @InData[0], Readed);
-      StageStopwatch.Stop;
-      if PerfLogger <> nil then
-        PerfLogger.Add(opsAudioConvert, StopwatchElapsedMs(StageStopwatch));
-      if ConvertedSamples <= 0 then
-      begin
-        ErrorMessage := 'audio swr_convert failed.';
-        Exit;
-      end;
-      AudioFrame^.nb_samples := ConvertedSamples;
-
-      StageStopwatch := TStopwatch.StartNew;
-      Result := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
-        Packet, Frame, ErrorMessage);
-      StageStopwatch.Stop;
-      if PerfLogger <> nil then
-        PerfLogger.Add(opsAudioEncodeWrite, StopwatchElapsedMs(StageStopwatch));
-      if not Result then
-        Exit;
-      Inc(SampleStart, Readed);
+      Inc(SampleStart, SamplesToRead);
       if (PerfLogger <> nil) and
         ((SampleStart - LastAudioTraceSample) >= Settings.Audio.SampleRate * 5) then
       begin
         LastAudioTraceSample := SampleStart;
         PerfLogger.Trace(Format('audio_progress sample=%d/%d',
-          [SampleStart, oip^.audio_n]));
+          [SampleStart, AudioSampleCount]));
       end;
     end;
 
     if PerfLogger <> nil then
       PerfLogger.Trace(Format('audio_flush_begin sample=%d/%d',
-        [SampleStart, oip^.audio_n]));
+        [SampleStart, AudioSampleCount]));
     StageStopwatch := TStopwatch.StartNew;
     Result := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
       Packet, nil, ErrorMessage);
@@ -493,6 +683,9 @@ var
   PerfLogFinished: Boolean;
   PerfStatus: string;
   EffectiveSettings: TOutputTestSettings;
+  AudioPcm: TBytes;
+  AudioSampleCount: Integer;
+  AudioTargetSample: Integer;
 begin
   Result := False;
   ErrorMessage := '';
@@ -508,6 +701,7 @@ begin
   EncodedFrameCount := 0;
   PerfLogFinished := False;
   PerfStatus := 'not_started';
+  AudioSampleCount := 0;
 
   EffectiveSettings := Settings;
   if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) then
@@ -532,10 +726,13 @@ begin
     PerfLogger := nil;
 
   try
-    if PerfLogger <> nil then
-      PerfLogger.Trace(Format('encode_begin output_info w=%d h=%d frames=%d rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
-        [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
-         oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
+  if PerfLogger <> nil then
+    PerfLogger.Trace(Format('encode_begin output_info w=%d h=%d frames=%d rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
+      [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
+       oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
+  if PerfLogger <> nil then
+    PerfLogger.Trace(Format('audio_prefetch_mode frame_synced read_chunk_samples=%d',
+      [AUDIO_READ_CHUNK_SAMPLES]));
 
     Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
     if not CheckFFmpeg(Code, 'avformat_alloc_output_context2', ErrorMessage) then
@@ -658,6 +855,8 @@ begin
     AverageFps := 0;
     MinFps := MaxDouble;
     MaxFps := 0;
+    FrameIndex := 0;
+    if (not Aborted) and (not FatalAfterHeader) then
     for FrameIndex := 0 to oip^.n - 1 do
     begin
       FrameStopwatch := TStopwatch.StartNew;
@@ -749,6 +948,30 @@ begin
       if MinFps = MaxDouble then
         MinFps := 0;
 
+      if (AudioCodecContext <> nil) and (not Aborted) and (not FatalAfterHeader) then
+      begin
+        AudioTargetSample := AudioTargetSampleForFrame(oip, FrameIndex + 1);
+        if AudioTargetSample > AudioSampleCount then
+        begin
+          if PerfLogger <> nil then
+            PerfLogger.Trace(Format('audio_prefetch_call_begin frame=%d target_sample=%d',
+              [FrameIndex + 1, AudioTargetSample]));
+          if not PrefetchAudioUntilSample(oip, EffectiveSettings, PerfLogger, AudioPcm,
+            AudioSampleCount, AudioTargetSample, ErrorMessage) then
+          begin
+            if OutputAbortRequested(oip) or CurrentAborted then
+              Aborted := True
+            else
+              FatalAfterHeader := True;
+            Break;
+          end;
+          if PerfLogger <> nil then
+            PerfLogger.Trace(Format('audio_prefetch_call_end frame=%d samples=%d fatal=%s error="%s"',
+              [FrameIndex + 1, AudioSampleCount, BoolToStr(FatalAfterHeader, True),
+               ErrorMessage]));
+        end;
+      end;
+
       if Assigned(oip^.func_rest_time_disp) then
         oip^.func_rest_time_disp(FrameIndex + 1, oip^.n);
       if Assigned(OnProgress) then
@@ -786,12 +1009,35 @@ begin
            BoolToStr(FatalAfterHeader, True)]));
     end;
 
+    if (not Aborted) and OutputAbortRequested(oip) then
+    begin
+      CurrentAborted := True;
+      Aborted := True;
+      if PerfLogger <> nil then
+        PerfLogger.Trace('output_abort_after_video_flush');
+    end;
+
+    if (not Aborted) and (not FatalAfterHeader) and (CodecContext <> nil) then
+    begin
+      if PerfLogger <> nil then
+        PerfLogger.Trace('video_codec_free_before_audio_begin');
+      TFFmpegApi.avcodec_free_context(@CodecContext);
+      if PerfLogger <> nil then
+        PerfLogger.Trace('video_codec_free_before_audio_end');
+    end;
+
     if (AudioCodecContext <> nil) and (not Aborted) and (not FatalAfterHeader) then
     begin
       if PerfLogger <> nil then
         PerfLogger.Trace('audio_encode_call_begin');
-      if not EncodeAudioFromCallbacks(FormatContext, AudioCodecContext, AudioStream,
-        Packet, oip, EffectiveSettings, PerfLogger, ErrorMessage) then
+      if (Length(AudioPcm) > 0) and (AudioSampleCount > 0) then
+        Result := EncodeAudioFromPcmBuffer(FormatContext, AudioCodecContext, AudioStream,
+          Packet, oip, EffectiveSettings, @AudioPcm[0], AudioSampleCount, PerfLogger,
+          ErrorMessage)
+      else
+        Result := EncodeAudioFromPcmBuffer(FormatContext, AudioCodecContext, AudioStream,
+          Packet, oip, EffectiveSettings, nil, 0, PerfLogger, ErrorMessage);
+      if not Result then
       begin
         if OutputAbortRequested(oip) or CurrentAborted then
           Aborted := True
@@ -821,7 +1067,7 @@ begin
 
     if Aborted then
     begin
-      ErrorMessage := 'Output was stopped.';
+      ErrorMessage := '';
       PerfStatus := 'aborted';
       Result := False;
     end

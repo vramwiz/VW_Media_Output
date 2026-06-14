@@ -840,3 +840,262 @@ AudioMode=Aac192
 - 音声確認用に、音声あり素材で `get_audio` / `audio_convert` / `audio_encode_write` の `count` と `total_ms` が出ることを確認する。
 - 画質確認用に、YUY2 出力後の色、上下、音ズレ、ブロックノイズ、ビットレート設定の反映を確認する。
 
+
+## 2026-06-05 main_14/59 100%到達後に非常に遅くなる件の現状
+
+対象:
+
+- `D:\VoiceroidProj\main_14\59`
+- 主な出力先: `D:\VoiceroidProj\main_14\59\proj14_59_01_test.mp4`
+- perf log: `D:\VoiceroidProj\main_14\59\proj14_59_01_test.mp4.perf.log`
+- 設定例: `encoder=h264_qsv pixel=nv12 input=YUY2`
+- 音声: `audio_n=2081520 audio_rate=44100 audio_ch=2`
+
+ユーザー確認:
+
+- デコーダーを変更しても現象は変わらない。
+- エンコーダーを変更すると正常に出力されるケースがある。
+- 正常なデータでは出力進捗は0%から100%まで進み、100%到達で完了する。
+- 問題データでは100%到達後に停止して見える、または極端に遅くなる。
+
+ログから確定していること:
+
+- 映像ループ自体は最後まで到達している。
+  - 例: `video_loop_end frame_index=1416 encoded_frames=1416 aborted=False fatal=False`
+- QSV側の映像flushは短時間で完了している。
+  - 例: `video_flush_end result=True elapsed_ms=3～5ms`
+- 遅いのはFFmpegのAACエンコード処理ではない。
+  - `audio_encode_write` は平均1ms未満の範囲。
+- 遅い箇所はAviUtl2の `func_get_audio` 呼び出し。
+  - 例: `dominant_stage=get_audio`
+  - 例: `get_audio avg_ms=57.611 max_ms=1051.456 total_ms=51561.868 pct=57.9`
+- 特に `sample=688128` 以降、次の音声取得で極端に戻りが遅くなる傾向がある。
+
+試したが根本改善しなかった対策:
+
+- 映像flush後、音声処理に入る前にvideo codec contextを解放。
+  - ログには `video_codec_free_before_audio_begin/end` が出る。
+  - 改善しなかったため、QSV encoder context保持だけが主因ではない。
+- `func_get_audio` の取得単位を `1024` samples から `16384` samples へ拡大。
+  - `get_audio` 呼び出し回数は減った。
+  - しかし問題位置以降の遅さは変わらず、呼び出し回数より特定範囲の取得そのものが重いと判断。
+- 音声を映像ループ中に分割投入する案も試したが、先頭付近で `fatal_after_header` になったため撤回済み。
+
+現在残している修正:
+
+- キャンセル時に `Result=True` のまま抜ける可能性を潰した。
+- `func_get_audio` 直後にもキャンセル確認を追加。
+- キャンセル時はエラーダイアログを出さないよう、abort時の最終 `ErrorMessage` は空にする。
+- 映像flush後のキャンセル確認を追加。
+- 調査用として、音声取得前後に以下の詳細ログを追加中。
+  - `audio_read_begin sample=... length=...`
+  - `audio_read_end sample=... requested=... readed=... elapsed_ms=... data_nil=...`
+
+次に確認すること:
+
+- 詳細ログ版を反映した状態で再出力し、最後に出ている `audio_read_begin` と対応する `audio_read_end` を見る。
+- `audio_read_begin` だけ出て `audio_read_end` が出ない場合、その `sample` / `length` の `func_get_audio` が戻ってきていない。
+- `audio_read_end` が出ている場合は `elapsed_ms` が大きい範囲を特定する。
+- そのサンプル位置をフレーム換算する。
+  - 例: `frame ~= sample * 30 / 44100`
+  - `sample=688128` は約468フレーム、約15.6秒付近。
+
+未解決:
+
+- なぜ特定範囲の `func_get_audio` が非常に重くなるかは未確定。
+- エンコーダー変更で改善する理由も未確定。ただし、現時点の計測では出力側FFmpeg AAC encodeよりもAviUtl2音声取得側の待ち時間が支配的。
+
+## 2026-06-05 失敗データ/成功データ比較と 100% 表示の扱い
+
+ユーザー補足:
+
+- 画面上では 100% 到達後の問題として見えているため、ユーザー観測としては「音声処理中に遅い」というより「100% 部分で完了しない」症状。
+- 正常なデータは 100% に来てすぐ完了する。
+- 失敗データ:
+  - `D:\VoiceroidProj\main_14\59`
+  - `D:\VoiceroidProj\main_14\59\proj14_59_01_test.mp4.perf.log`
+- 成功データ:
+  - `D:\VoiceroidProj\Main_07\49`
+  - `D:\VoiceroidProj\Main_07\49\Proj_07_49_01_nico_test.mp4.perf.log`
+
+ログ比較:
+
+- 失敗データも映像ループ自体は 100% 相当まで完了している。
+  - `video_loop_end frame_index=1416 encoded_frames=1416 aborted=False end_of_source=False fatal=False`
+  - `video_flush_end result=True elapsed_ms=4.024 fatal=False`
+- 失敗データは映像完了後の後段処理で、`audio_read` が途中から急激に遅くなる。
+  - `audio_encode_begin total_samples=2081520 rate=44100 ch=2`
+  - `sample=770048` から `elapsed_ms=1615.887`
+  - `sample=786432` で `elapsed_ms=2085.296`
+  - `sample=802816` で `elapsed_ms=1842.465`
+  - `sample=819200` で `elapsed_ms=1881.537`
+  - その後キャンセルにより `audio_abort_requested_after_read sample=819200/2081520`
+- 成功データは映像完了後、音声後段処理が短時間で完了している。
+  - `video_loop_end` 18:14:47.499
+  - `audio_encode_call_begin` 18:14:47.503
+  - `audio_flush_end` 18:14:50.938
+  - `av_write_trailer_end` 18:14:50.939
+  - 約 3.4 秒で音声処理から trailer まで完了。
+- 失敗データでは `audio_encode_call_begin` 19:20:22.542 からキャンセル 19:20:30.721 まで約 8.2 秒経過しても、`819200/2081520` samples までしか進んでいない。
+
+現時点の整理:
+
+- UI の 100% 表示は、少なくとも現在のログ上では映像ループ完了とほぼ対応している可能性が高い。
+- そのため「100% に来てから完了しない」というユーザー観測は正しい。
+- 一方で、ログ上で 100% 相当の映像完了後に実際に時間を消費している呼び出しは `func_get_audio`。
+- ただし、ユーザー観測としては 100% 部分の問題なので、原因説明では「音声が原因」と断定せず、「100% 表示後の後段処理で `func_get_audio` が戻りにくい」と表現する。
+
+次に見ること:
+
+- なぜ失敗データだけ、`sample=770048` 付近以降の `func_get_audio` が 1.6～2.1 秒/回になるかを調べる。
+- 成功データと失敗データで、AviUtl2 側の音声構成、オブジェクト/フィルタ、長さ、終端付近の配置差を確認する。
+- 進捗表示が映像フレーム基準なら、音声後段処理中にもユーザーからは 100% 停止に見えるため、ログやキャンセル表示では「映像後処理/音声取得中」などの状態が分かるようにする案も検討する。
+
+## 2026-06-05 音声取得を映像ループ前に先読みする修正
+
+狙い:
+
+- 失敗データでは UI 上 100% 到達後に完了しないように見える。
+- 現行ログでは 100% 相当の `video_loop_end` 後に `func_get_audio` をまとめて呼び出しており、ここが遅いとユーザーには 100% 後の停止として見える。
+- そのため、`func_get_audio` 呼び出しを映像ループ後ではなく映像ループ前に移し、100% 到達後は AviUtl2 の音声取得へ戻らない構造へ変更した。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `PrefetchAudioFromCallbacks` を追加。
+    - `avformat_write_header` 後、映像ループ前に `func_get_audio` から PCM16 を `TBytes` へ先読みする。
+    - `.perf.log` に `audio_prefetch_*` 系ログを出す。
+  - `EncodeAudioFromPcmBuffer` を追加。
+    - 映像ループ後は先読み済み PCM buffer から AAC へ変換/書き込みする。
+    - `audio_encode_begin ... source=prefetched` を出す。
+  - 既存の AAC encode / mux の流れは維持し、AviUtl2 から音声を読むタイミングだけ前倒しした。
+
+確認:
+
+- Win64 Debug compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+次の実機確認:
+
+- AviUtl2 を再起動して失敗データ `D:\VoiceroidProj\main_14\59` を再出力する。
+- `.perf.log` の先頭付近に `audio_prefetch_call_begin` / `audio_prefetch_read_*` / `audio_prefetch_call_end` が出ることを確認する。
+- 100% 到達後に `audio_read_*` が出ないことを確認する。
+- もし今度は 0% 付近、または映像開始前に遅くなる場合は、`audio_prefetch_read_end elapsed_ms` が大きい sample を確認する。
+
+## 2026-06-05 音声先読みの無音対策として映像進行同期へ変更
+
+症状:
+
+- 音声を映像ループ前に全量先読みすると、最初に時間はかかるが、その後は正常に終了した。
+- ただし、出力音声が部分的に無音になった。
+
+見立て:
+
+- AviUtl2 側の音声生成/キャッシュが、映像処理開始前の全量 `func_get_audio` と相性が悪い可能性がある。
+- 100% 後の待ちを避ける狙いは維持しつつ、音声取得のタイミングを映像フレーム進行に同期させる方針に変更する。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - 全量先読みの `PrefetchAudioFromCallbacks` をやめ、`PrefetchAudioUntilSample` に変更。
+  - 映像フレームを1枚処理するごとに、そのフレーム時刻に対応する sample 位置まで PCM を先読みする。
+  - 最終フレームでは `audio_n` まで先読みしてから 100% 進捗表示へ進む。
+  - 映像完了後の AAC encode は、引き続き先読み済み PCM buffer から行う。
+  - `audio_prefetch_chunk_stats sample=... readed=... max_abs=... silent=...` を追加。
+    - まだ部分無音が出る場合、AviUtl2 から取得した時点で無音なのか、後段変換/encodeで無音化しているのかを切り分ける。
+
+狙い:
+
+- `func_get_audio` を 100% 後にまとめて呼ばない。
+- かつ、映像処理前に音声だけ全量取得して部分無音になるリスクを避ける。
+- もしまだ無音が出る場合は、`audio_prefetch_read_end` の sample 位置と出力の無音位置を対応させて調べる。
+
+確認:
+
+- Win64 Debug compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+次の作業:
+
+- 再出力して、100% 後に待たないことと、音声の部分無音が消えることを確認する。
+- まだ無音が出る場合は、無音区間に対応する `audio_prefetch_chunk_stats` の `max_abs` を見る。
+
+## 2026-06-05 音声先読み同期後も特定話者が無音になる件
+
+症状:
+
+- 最初の遅さはなくなり、その後も正常に終了する。
+- ただし、50% 付近から音声が部分的に無音になる。
+- AviUtl2 側では琴葉茜と琴葉葵が会話しているが、葵のみ無音になるように見える。
+- 最後の方では無音が元に戻る。
+
+ログから見えたこと:
+
+- `audio_prefetch_chunk_stats` で、問題付近に `max_abs=0 silent=True` が連続している。
+- これは AAC encode 後ではなく、`func_get_audio` から返った PCM の時点で無音になっていることを示す。
+- したがって、こちらの planar 変換や AAC encode で片方だけ落としているというより、音声取得タイミングにより AviUtl2 側のミックス結果が一部未反映になっている可能性が高い。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `AUDIO_PREFETCH_LAG_FRAMES = 300` を追加。
+  - 映像進行ぴったりで音声を読むのではなく、約 10 秒遅らせて `func_get_audio` する。
+  - 最終フレームでは従来どおり `audio_n` まで読み切ってから 100% 表示へ進む。
+  - ログに `audio_prefetch_mode lag_frames=300 read_chunk_samples=16384` を出す。
+
+狙い:
+
+- AviUtl2 側の音声合成/キャッシュが追いつく時間を置いてから音声を取得する。
+- 100% 後にまとめて音声取得する構造には戻さず、ただし現在フレーム直近の音声を急いで取りに行くことも避ける。
+
+確認:
+
+- Win64 Debug compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+次の確認:
+
+- 再出力して、50% 付近の葵無音が改善するか確認する。
+- まだ無音が出る場合は、無音区間の `audio_prefetch_chunk_stats max_abs` が 0 か、0 ではないかを見る。
+- 改善が足りない場合は `AUDIO_PREFETCH_LAG_FRAMES` をさらに増やす、または音声取得だけは映像完了後に戻し、進捗表示側を 100% にしない方針へ戻す。
+
+追記:
+
+- 無音の原因は元データ破損と判明。
+- そのため、葵だけ無音になる件は出力プラグイン側の不具合ではなく正常扱い。
+- 直前に入れた `AUDIO_PREFETCH_LAG_FRAMES = 300` の遅延取得方式は取り消し、ひとつ前の方式へ戻した。
+  - 映像フレーム進行に同期して、そのフレーム時刻まで音声 PCM を先読みする。
+  - 最終フレームでは `audio_n` まで読み切ってから 100% 表示へ進む。
+  - ログは `audio_prefetch_mode frame_synced read_chunk_samples=16384`。
+- Win64 Debug compile 成功、警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+## 2026-06-14 Releaseビルドでperf logが出る問題の修正
+
+症状:
+
+- Releaseビルドで出力しても、出力ファイル横に `.perf.log` が生成されるように見えた。
+
+原因:
+
+- `Plugin_Output\FFmpegOutputPerfLog.pas` の `OUTPUT_PERF_LOG_ENABLED` が常に `True` になっていた。
+- `.dproj` 側ではReleaseビルド時に `RELEASE`、Debugビルド時に `DEBUG` が定義されているが、ログ有効/無効の定数がそれを見ていなかった。
+
+修正:
+
+- `OUTPUT_PERF_LOG_ENABLED` を条件コンパイルに変更。
+  - `DEBUG` 定義あり: `True`
+  - それ以外、つまりRelease: `False`
+
+確認:
+
+- Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+注意:
+
+- 既存の `.perf.log` は自動削除しない。修正後のRelease版では新規作成されない想定。
