@@ -1,4 +1,4 @@
-﻿library VW_Media_Output;
+library VW_Media_Output;
 
 uses
   Winapi.Windows,
@@ -50,7 +50,7 @@ end;
 //------------------------------------------------------------------------------
 // Output process
 //------------------------------------------------------------------------------
-// AviUtl2から渡された保存先を使い、現在設定で直接MP4を書き出す。
+// AviUtl2から渡された保存先を使い、現在設定の形式で直接書き出す。
 function func_output(oip: POutputInfo): Boolean; cdecl;
 var
   Settings: TOutputTestSettings;
@@ -68,6 +68,7 @@ begin
     Settings.SaveFileName := string(oip^.savefile);
 
     Result := ExportOutputInfo(oip, Settings, ErrorMessage);
+    LoadOutputSettingsFromIni(CurrentSettings);
     if not Result and (ErrorMessage <> '') then
       MessageBox(0, PChar(ErrorMessage), 'VW_Media_Output', MB_OK or MB_ICONERROR);
   except
@@ -87,6 +88,7 @@ end;
 function func_config(hwnd: HWND; hinst: HINST): Boolean; cdecl;
 begin
   EnsureCurrentSettings;
+  LoadOutputSettingsFromIni(CurrentSettings);
   Result := ExecuteOutputSettingsDialog(hwnd, CurrentSettings);
   if Result then
   begin

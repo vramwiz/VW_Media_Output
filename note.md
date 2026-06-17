@@ -1386,6 +1386,179 @@ AudioMode=Aac192
 - post-build の `.dll` -> `.auo2` コピーは、AviUtl2 が `VW_Media_Output.auo2` を使用中のため失敗。
 - AviUtl2 を閉じて再ビルドすれば、更新版 `.auo2` が配置される。
 
+## 2026-06-17 確認ポイントログ表示トグル追加
+
+背景:
+
+- プレビュー上で暗いフレーム検出を強いエラー表示にすると、中間データとして意図的に未完成品を書き出す作業では大げさに見える。
+- 一方で、完成品確認時にはエンコード終了後に check log を開ける導線が欲しい。
+
+方針:
+
+- プレビュー上の表示は `確認ポイントあり` へ寄せ、エラー断定の印象を弱める。
+- check log は従来どおり生成する。
+- 確認ポイントがある場合に出力後 check log を表示するかどうかを、プレビュー画面のチェックボックスで切り替える。
+- 切り替え状態は `VW_Media_Output.ini` の `ShowCheckLogAfterEncode` に保存する。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputConfig.pas`
+  - `TOutputTestSettings.ShowCheckLogAfterEncode` を追加。
+  - 既定値は `False`。
+- `Plugin_Output\FFmpegOutputSettingsStorage.pas`
+  - `ShowCheckLogAfterEncode` の保存・読み込みを追加。
+  - プレビュー画面からこの値だけを保存する `SaveOutputCheckLogDisplayToIni` を追加。
+- `Plugin_Output\FFmpegOutputPreview.pas`
+  - プレビュー下部に `確認ポイントがある場合、出力後にログを表示` チェックボックスを追加。
+  - チェック切り替え時に INI へ即時保存する。
+  - 出力後の check log 自動表示は、確認ポイントがあり、かつチェックが ON の場合だけ行う。
+  - プレビュー上の暗いフレーム検出表示を `確認ポイントあり` に変更。
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - プレビュー作成時に `ShowCheckLogAfterEncode` を渡すよう変更。
+- `VW_Media_Output.dpr`
+  - 出力後と設定画面表示前に INI を読み直し、プレビュー画面で変更したトグル状態が古い保持設定で上書きされないようにした。
+
+確認:
+
+- Win64 Debug compile 成功。
+- Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+## 2026-06-17 AlphaProRes の保存拡張子と muxer 不一致修正
+
+状況:
+
+- AviUtl2 上で出力開始時に `avformat_write_header: Invalid argument` が表示された。
+- 発生条件として、`Output mode = Alpha MOV / ProRes 4444` のまま保存先拡張子が `.mp4` などになっている可能性が高い。
+- これまで `avformat_alloc_output_context2` は保存ファイル名から muxer を推定していたため、AlphaProRes でも MP4 muxer が選ばれ、ProRes 4444 / alpha の header 書き込みで失敗する経路があった。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `Settings.SaveFileName` を実保存先として使う `EffectiveSaveFileName` を追加。
+  - AlphaProRes のときは `EffectiveSaveFileName` の拡張子を `.mov` に補正する。
+  - AlphaProRes のときは `avformat_alloc_output_context2` に muxer 名 `mov` を明示的に渡す。
+  - perf log / check log / preview も補正後の `.mov` パスを基準にする。
+  - 公開入口コメントを MP4 固定ではなく現在設定の形式で書き出す表現へ修正。
+
+確認:
+
+- Win64 Debug compile 成功。
+- Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+追記:
+
+- AviUtl2 側の保存ダイアログ拡張子を、出力モード変更に合わせてプラグイン側から動的に切り替えるのは難しい。
+- そのため、謎の `avformat_write_header: Invalid argument` へ進ませないことをプラグイン側の責務とする。
+- AlphaProRes で `.mov` 以外が指定された場合は、プラグイン内部で `.mov` に補正して出力する。
+- 保存ダイアログ側の拡張子連動は AviUtl2 作者への要望事項とする。
+
+追加変更:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - 補正前後の保存ファイル名を `output_filename_adjusted from="..." to="..." reason=alpha_prores_requires_mov` として perf log に残す。
+- `VW_Media_Output.dpr`
+  - 出力処理コメントの MP4 固定表現を、現在設定の形式で書き出す表現へ修正。
+
+追加確認:
+
+- Win64 Debug compile 本体は成功、警告 0。
+- post-build の `.dll` -> `.auo2` コピーは、AviUtl2 が `VW_Media_Output.auo2` を使用中のため失敗。
+- AviUtl2 を閉じて再ビルドすれば、更新版 `.auo2` が配置される。
+
+## 2026-06-17 プレビュー下部トグルの視認性改善
+
+状況:
+
+- `確認ポイントがある場合、出力後にログを表示` のトグル自体は機能していた。
+- ただし、プレビュー背景や動画内容が白/黒どちらにもなり得るため、チェックボックス文字列が見えにくくなる可能性があった。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputPreview.pas`
+  - プレビュー画像の下に不透明な濃いグレーの `TPanel` を追加。
+  - 状態表示とログ表示トグルを、この下部パネル内に配置するよう変更。
+  - `TCheckBox` の caption は空にし、白文字の `TLabel` を横に置く形へ変更。
+  - ラベルをクリックしてもチェック状態が切り替わるようにした。
+  - チェックボックス文言幅を基準にフォーム最小幅を広げ、文言が切れにくいようにした。
+
+確認:
+
+- post-build を抑止した Win64 Debug compile 成功。
+- post-build を抑止した Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- AviUtl2 が `VW_Media_Output.auo2` を使用中のため、実配置は未実施。
+- AviUtl2 を閉じて通常ビルドすれば、更新版 `.auo2` が配置される。
+
+## 2026-06-17 プレビュー画面をリサイズ追従レイアウトへ変更
+
+目的:
+
+- プレビューウィンドウが可変サイズなので、フォーム拡大時にプレビュー画像も自然に拡大表示されるようにする。
+- 下部の状態表示とログ表示トグルは、動画サイズに引きずられず固定領域として扱う。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputPreview.pas`
+  - プレビュー画像用の `TPanel` を追加し、`Align = alClient` にした。
+  - `TImage` をプレビュー用パネル内で `Align = alClient` にした。
+  - `TImage.Stretch = True`、`Proportional = True`、`Center = True` にし、フォームサイズに合わせてアスペクト比を保って表示する。
+  - 下部操作パネルは `Align = alBottom`、高さ固定にした。
+  - `OnResize` で状態ラベルとチェック説明ラベルの幅をフォーム幅へ追従させるようにした。
+  - フォームの最小幅/最小高さを設定し、下部文字や操作領域が潰れにくいようにした。
+
+確認:
+
+- post-build を抑止した Win64 Debug compile 成功。
+- post-build を抑止した Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- AviUtl2 が `VW_Media_Output.auo2` を使用中のため、実配置は未実施。
+- AviUtl2 を閉じて通常ビルドすれば、更新版 `.auo2` が配置される。
+
+## 2026-06-17 プレビュー状態表示の色を簡素化
+
+背景:
+
+- フレーム処理状態の表示で赤やオレンジを使うと、下部バー上で急に読みにくくなる。
+- 画面上の文言はすでに `確認ポイントあり` に弱めているため、色も強い警告表現にしすぎない方がよい。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputPreview.pas`
+  - `SetStatus` の色分けを簡素化。
+  - 正常時は白。
+  - 確認ポイントありの状態は黄色。
+  - caution / warning / error の段階別に黄・オレンジ・赤へ変える表示は廃止。
+
+確認:
+
+- post-build を抑止した Win64 Debug compile 成功。
+- post-build を抑止した Win64 Release compile 成功。
+- 警告 0、エラー 0。
+
+## 2026-06-17 プレビュー/check log 周りの調整完了
+
+完了扱い:
+
+- プレビュー上の暗いフレーム検出は、強いエラー表現ではなく `確認ポイントあり` として扱う方針で確定。
+- `確認ポイントがある場合、出力後にログを表示` トグルを追加し、INI 保存・復元も確認済み。
+- トグル表示は動画内容に左右されない下部バーへ移動し、白/黒どちらの映像でも読めるようにした。
+- プレビュー画面はフォームリサイズに追従し、画像領域を `alClient`、下部操作領域を `alBottom` に分ける形で確定。
+- 状態表示色は、通常を白、確認ポイントありを黄色に簡素化。
+- AlphaProRes 時の `.mp4` 指定による `avformat_write_header: Invalid argument` は、内部で `.mov` と `mov` muxer へ補正して回避する方針で確定。
+- AviUtl2 側保存ダイアログの拡張子をモード連動で切り替える対応は、プラグイン側では難しいため作者への要望事項とする。
+
+最終確認:
+
+- post-build を抑止した Win64 Debug compile 成功。
+- post-build を抑止した Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- AviUtl2 が `VW_Media_Output.auo2` を使用中の場合は、通常ビルドの post-build copy だけ失敗する。
+- 実配置は AviUtl2 を閉じて通常ビルドする。
+
 ## コメント記述ルール
 
 基本方針:

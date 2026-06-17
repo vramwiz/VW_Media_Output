@@ -1,4 +1,4 @@
-﻿unit FFmpegOutputPreview;
+unit FFmpegOutputPreview;
 
 {$WARN IMPLICIT_STRING_CAST OFF}
 
@@ -22,7 +22,7 @@ type
   public
     constructor Create(const SaveFileName, EncodeDescription: string;
       SourceWidth, SourceHeight, TotalFrames, Rate, Scale: Integer;
-      VideoInputKind: TOutputVideoInputKind);
+      VideoInputKind: TOutputVideoInputKind; ShowCheckLogAfterEncode: Boolean);
     destructor Destroy; override;
     procedure UpdateFrame(FrameIndex: Integer; FrameData: Pointer);
     procedure UpdateStatus(const Text: string);
@@ -40,7 +40,11 @@ type
     FLastTick          : UInt64;                 // 前回プレビュー表示を更新したtick
     FForm              : TObject;                // 実体のTFormを遅延参照する枠
     FImage             : TObject;                // 実体のTImageを遅延参照する枠
+    FPreviewPanel      : TObject;                // 実体のプレビュー配置用TPanelを遅延参照する枠
+    FControlPanel      : TObject;                // 実体のTPanelを遅延参照する枠
     FStatusLabel       : TObject;                // 実体のTLabelを遅延参照する枠
+    FCheckLogOption    : TObject;                // 実体のTCheckBoxを遅延参照する枠
+    FCheckLogLabel     : TObject;                // 実体のTLabelを遅延参照する枠
     FBitmap            : TObject;                // プレビュー表示用TBitmap
     FSwsContext        : Pointer;                // プレビュー縮小変換用sws context
     FPreviewBuffer     : TBytes;                 // BGR24へ変換したプレビュー画素buffer
@@ -51,6 +55,7 @@ type
     FErrorCount        : Integer;                // errorとして記録した区間数
     FDarkStartFrame    : Integer;                // 暗いフレーム区間の開始フレーム
     FCurrentSeverity   : TOutputPreviewSeverity; // 現在表示している検査状態
+    FShowCheckLogAfterEncode : Boolean;          // 確認ポイントがある場合に終了後check logを表示するか
     FPreviewWidth      : Integer;                // プレビュー表示幅
     FPreviewHeight     : Integer;                // プレビュー表示高さ
     procedure BuildWindow;
@@ -62,6 +67,9 @@ type
     function PreviewCornersMostlyDark: Boolean;
     procedure FinishDarkSegment(EndFrameIndex: Integer; const Reason: string);
     procedure UpdateFrameCheck(FrameIndex: Integer);
+    procedure LogOptionClick(Sender: TObject);
+    procedure LogOptionLabelClick(Sender: TObject);
+    procedure ResizeControls(Sender: TObject);
     procedure SetStatus(Severity: TOutputPreviewSeverity; const Text: string);
   end;
 
@@ -69,7 +77,8 @@ implementation
 
 uses
   System.Classes, System.Math, System.Types, Winapi.ShellAPI, Vcl.Controls,
-  Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FFmpegApi;
+  Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FFmpegApi,
+  FFmpegOutputSettingsStorage;
 
 const
   PREVIEW_MAX_WIDTH              = 480;  // プレビュー表示の最大幅px
@@ -119,7 +128,8 @@ end;
 // 出力情報を保持し、check logとプレビューウィンドウを準備する。
 constructor TOutputPreviewWindow.Create(const SaveFileName,
   EncodeDescription: string; SourceWidth, SourceHeight, TotalFrames, Rate,
-  Scale: Integer; VideoInputKind: TOutputVideoInputKind);
+  Scale: Integer; VideoInputKind: TOutputVideoInputKind;
+  ShowCheckLogAfterEncode: Boolean);
 var
   PreviewScale: Double;
 begin
@@ -132,6 +142,7 @@ begin
   FRate := Rate;
   FScale := Scale;
   FVideoInputKind := VideoInputKind;
+  FShowCheckLogAfterEncode := ShowCheckLogAfterEncode;
   FDurationMs := 0;
   if (FTotalFrames > 0) and (FRate > 0) and (FScale > 0) then
     FDurationMs := (Int64(FTotalFrames) * FScale * 1000) div FRate;
@@ -174,12 +185,21 @@ end;
 procedure TOutputPreviewWindow.BuildWindow;
 var
   Form: TForm;
+  PreviewPanel: TPanel;
   Image: TImage;
+  ControlPanel: TPanel;
   StatusLabel: TLabel;
+  CheckLogOption: TCheckBox;
+  CheckLogLabel: TLabel;
   Bitmap: TBitmap;
+  CheckCaption: string;
+  ContentWidth: Integer;
   Margin: Integer;
+  PanelHeight: Integer;
 begin
   Margin := 10;
+  PanelHeight := 48;
+  CheckCaption := '確認ポイントがある場合、出力後にログを表示';
 
   Form := TForm.Create(nil);
   Form.Caption := 'VW Media Output Preview';
@@ -191,31 +211,70 @@ begin
   Form.Font.Size := 9;
   Form.Color := clBlack;
   Form.DoubleBuffered := True;
-  Form.ClientWidth := FPreviewWidth + Margin * 2;
-  Form.ClientHeight := FPreviewHeight + Margin * 2 + 24;
+  Form.Canvas.Font.Assign(Form.Font);
+  ContentWidth := Max(FPreviewWidth, Form.Canvas.TextWidth(CheckCaption) + 24);
+  Form.ClientWidth := ContentWidth + Margin * 2;
+  Form.ClientHeight := FPreviewHeight + PanelHeight;
+  Form.Constraints.MinWidth := ContentWidth + Margin * 2;
+  Form.Constraints.MinHeight := PanelHeight + 120;
+
+  PreviewPanel := TPanel.Create(Form);
+  PreviewPanel.Parent := Form;
+  PreviewPanel.Align := alClient;
+  PreviewPanel.BevelOuter := bvNone;
+  PreviewPanel.Color := clBlack;
+  PreviewPanel.ParentBackground := False;
 
   Image := TImage.Create(Form);
-  Image.Parent := Form;
-  Image.Left := Margin;
-  Image.Top := Margin;
-  Image.Width := FPreviewWidth;
-  Image.Height := FPreviewHeight;
-  Image.Stretch := False;
-  Image.Proportional := False;
+  Image.Parent := PreviewPanel;
+  Image.Align := alClient;
+  Image.Stretch := True;
+  Image.Proportional := True;
   Image.Center := True;
   Image.Transparent := False;
 
+  ControlPanel := TPanel.Create(Form);
+  ControlPanel.Parent := Form;
+  ControlPanel.Align := alBottom;
+  ControlPanel.Height := PanelHeight;
+  ControlPanel.BevelOuter := bvNone;
+  ControlPanel.Color := $00202020;
+  ControlPanel.ParentBackground := False;
+
   StatusLabel := TLabel.Create(Form);
-  StatusLabel.Parent := Form;
+  StatusLabel.Parent := ControlPanel;
   StatusLabel.Left := Margin;
-  StatusLabel.Top := Image.Top + Image.Height + 6;
-  StatusLabel.Width := FPreviewWidth;
+  StatusLabel.Top := 6;
   StatusLabel.Height := 18;
   StatusLabel.AutoSize := False;
   StatusLabel.Transparent := False;
-  StatusLabel.Color := clBlack;
+  StatusLabel.Color := ControlPanel.Color;
   StatusLabel.Font.Color := clWhite;
   StatusLabel.Caption := 'Preparing preview...';
+
+  CheckLogOption := TCheckBox.Create(Form);
+  CheckLogOption.Parent := ControlPanel;
+  CheckLogOption.Left := Margin;
+  CheckLogOption.Top := StatusLabel.Top + StatusLabel.Height + 4;
+  CheckLogOption.Width := 18;
+  CheckLogOption.Height := 18;
+  CheckLogOption.Caption := '';
+  CheckLogOption.Checked := FShowCheckLogAfterEncode;
+  CheckLogOption.Color := ControlPanel.Color;
+  CheckLogOption.Font.Color := clWhite;
+  CheckLogOption.OnClick := LogOptionClick;
+
+  CheckLogLabel := TLabel.Create(Form);
+  CheckLogLabel.Parent := ControlPanel;
+  CheckLogLabel.Left := CheckLogOption.Left + CheckLogOption.Width + 4;
+  CheckLogLabel.Top := CheckLogOption.Top + 1;
+  CheckLogLabel.Height := 18;
+  CheckLogLabel.AutoSize := False;
+  CheckLogLabel.Transparent := False;
+  CheckLogLabel.Color := ControlPanel.Color;
+  CheckLogLabel.Font.Color := clWhite;
+  CheckLogLabel.Caption := CheckCaption;
+  CheckLogLabel.OnClick := LogOptionLabelClick;
 
   Bitmap := TBitmap.Create;
   Bitmap.PixelFormat := pf24bit;
@@ -233,8 +292,14 @@ begin
 
   FForm := Form;
   FImage := Image;
+  FPreviewPanel := PreviewPanel;
+  FControlPanel := ControlPanel;
   FStatusLabel := StatusLabel;
+  FCheckLogOption := CheckLogOption;
+  FCheckLogLabel := CheckLogLabel;
   FBitmap := Bitmap;
+  Form.OnResize := ResizeControls;
+  ResizeControls(Form);
 
   Form.Show;
   Application.ProcessMessages;
@@ -260,7 +325,11 @@ begin
     FForm := nil;
   end;
   FImage := nil;
+  FPreviewPanel := nil;
+  FControlPanel := nil;
   FStatusLabel := nil;
+  FCheckLogOption := nil;
+  FCheckLogLabel := nil;
   CloseLog;
 end;
 
@@ -310,20 +379,57 @@ begin
   if FLogWriter <> nil then
   begin
     if IssueCount = 0 then
-      LogLine('正常: 異常や疑いは検出されませんでした。');
+      LogLine('正常: 確認ポイントは検出されませんでした。');
     LogLine('');
     LogLine('【最終結果】');
     if IssueCount = 0 then
       LogLine('正常')
     else
-      LogLine(Format('異常 %d 件、警告 %d 件、疑い %d 件があります。',
-        [FErrorCount, FWarningCount, FCautionCount]));
+      LogLine(Format('確認ポイント %d 件があります。内訳: 異常 %d 件、警告 %d 件、疑い %d 件。',
+        [IssueCount, FErrorCount, FWarningCount, FCautionCount]));
     TStreamWriter(FLogWriter).Free;
     FLogWriter := nil;
   end;
 
-  if (IssueCount > 0) and (FLogFileName <> '') and FileExists(FLogFileName) then
+  if FShowCheckLogAfterEncode and (IssueCount > 0) and (FLogFileName <> '') and
+    FileExists(FLogFileName) then
     ShellExecute(0, 'open', PChar(FLogFileName), nil, nil, SW_SHOWNORMAL);
+end;
+
+// 終了後check log表示の切り替えを保持する。
+procedure TOutputPreviewWindow.LogOptionClick(Sender: TObject);
+begin
+  if Sender is TCheckBox then
+  begin
+    FShowCheckLogAfterEncode := TCheckBox(Sender).Checked;
+    SaveOutputCheckLogDisplayToIni(FShowCheckLogAfterEncode);
+  end;
+end;
+
+// ラベル側をクリックしたときもcheck log表示の切り替えとして扱う。
+procedure TOutputPreviewWindow.LogOptionLabelClick(Sender: TObject);
+begin
+  if FCheckLogOption = nil then
+    Exit;
+
+  TCheckBox(FCheckLogOption).Checked := not TCheckBox(FCheckLogOption).Checked;
+  FShowCheckLogAfterEncode := TCheckBox(FCheckLogOption).Checked;
+  SaveOutputCheckLogDisplayToIni(FShowCheckLogAfterEncode);
+end;
+
+// フォーム幅に合わせて下部表示領域を広げる。
+procedure TOutputPreviewWindow.ResizeControls(Sender: TObject);
+const
+  CONTROL_MARGIN = 10;
+begin
+  if FControlPanel = nil then
+    Exit;
+
+  if FStatusLabel <> nil then
+    TLabel(FStatusLabel).Width := TPanel(FControlPanel).ClientWidth - CONTROL_MARGIN * 2;
+  if FCheckLogLabel <> nil then
+    TLabel(FCheckLogLabel).Width := TPanel(FControlPanel).ClientWidth -
+      TLabel(FCheckLogLabel).Left - CONTROL_MARGIN;
 end;
 
 // 継続中の暗いフレーム区間を指定フレームで終了させてログへ記録する。
@@ -479,13 +585,9 @@ begin
   StatusLabel.Caption := Text;
   case Severity of
     opsNormal:
-      StatusLabel.Font.Color := $00A0FFA0;
-    opsCaution:
-      StatusLabel.Font.Color := $0000D7FF;
-    opsWarning:
-      StatusLabel.Font.Color := $000080FF;
-    opsError:
-      StatusLabel.Font.Color := $000000FF;
+      StatusLabel.Font.Color := clWhite;
+  else
+      StatusLabel.Font.Color := clYellow;
   end;
 end;
 
@@ -522,13 +624,13 @@ begin
 
   case NewSeverity of
     opsError:
-      StatusText := Format('異常: 暗いフレーム疑い - frame %d / %d',
+      StatusText := Format('確認ポイントあり - frame %d / %d',
         [FrameIndex + 1, FTotalFrames]);
     opsWarning:
-      StatusText := Format('警告: 暗いフレーム疑い - frame %d / %d',
+      StatusText := Format('確認ポイントあり - frame %d / %d',
         [FrameIndex + 1, FTotalFrames]);
     opsCaution:
-      StatusText := Format('疑い: 暗いフレーム疑い - frame %d / %d',
+      StatusText := Format('確認ポイントあり - frame %d / %d',
         [FrameIndex + 1, FTotalFrames]);
   else
     StatusText := Format('正常 - frame %d / %d', [FrameIndex + 1, FTotalFrames]);

@@ -1,4 +1,4 @@
-﻿unit FFmpegOutputConfig;
+unit FFmpegOutputConfig;
 
 // 出力プラグインのUI/INI/encoderへ渡す設定値を定義し、選択肢を実設定へ展開する。
 // 通常H.264系と透過保持用ProRes 4444系の設定差分もここで管理する。
@@ -45,12 +45,13 @@ type
   end;
 
   TOutputTestSettings = record
-    SaveFileName : string;                // AviUtl2から渡された保存先
-    PresetName   : string;                // 将来用のpreset名
-    EncodeMode   : TOutputEncodeModeKind; // 通常出力か透過保持専用出力か
-    Container    : string;                // container表示名
-    Video        : TOutputVideoSettings;  // video encoder設定
-    Audio        : TOutputAudioSettings;  // audio encoder設定
+    SaveFileName             : string;                // AviUtl2から渡された保存先
+    PresetName               : string;                // 将来用のpreset名
+    EncodeMode               : TOutputEncodeModeKind; // 通常出力か透過保持専用出力か
+    Container                : string;                // container表示名
+    Video                    : TOutputVideoSettings;  // video encoder設定
+    Audio                    : TOutputAudioSettings;  // audio encoder設定
+    ShowCheckLogAfterEncode  : Boolean;               // 確認ポイントがある場合に出力後check logを表示するか
   end;
 
 const
@@ -486,6 +487,7 @@ begin
   Settings.PresetName := '';
   Settings.EncodeMode := oemNormal;
   Settings.Container := '';
+  Settings.ShowCheckLogAfterEncode := False;
   Settings.Video.CodecName := '';
   Settings.Video.EncoderName := '';
   Settings.Video.PixelFormatName := '';

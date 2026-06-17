@@ -1,4 +1,4 @@
-﻿unit FFmpegOutputSettingsStorage;
+unit FFmpegOutputSettingsStorage;
 
 // 出力設定をプラグイン横のINIへ保存/復元する。
 // 破損値や旧形式の値は既定値へ丸め、設定読み込み失敗で出力処理を止めない。
@@ -12,6 +12,8 @@ uses
 procedure LoadOutputSettingsFromIni(var Settings: TOutputTestSettings);
 // 本質的な選択値だけをINIへ保存し、派生値の不整合を避ける。
 procedure SaveOutputSettingsToIni(const Settings: TOutputTestSettings);
+// プレビュー画面から切り替えたcheck log表示設定だけをINIへ反映する。
+procedure SaveOutputCheckLogDisplayToIni(ShowCheckLogAfterEncode: Boolean);
 // プラグインDLLと同じフォルダに置くINIのパスを返す。
 function OutputSettingsIniPath: string;
 
@@ -228,6 +230,8 @@ begin
       ApplyVideoQuality(Settings, VideoQuality);
       ApplyAudioMode(Settings, AudioMode);
       ApplyEncodeMode(Settings, EncodeMode);
+      Settings.ShowCheckLogAfterEncode := Ini.ReadBool(SETTINGS_SECTION,
+        'ShowCheckLogAfterEncode', Settings.ShowCheckLogAfterEncode);
     finally
       Ini.Free;
     end;
@@ -254,6 +258,28 @@ begin
         VideoQualityToName(VideoQualityFromSettings(Settings)));
       Ini.WriteString(SETTINGS_SECTION, 'AudioMode',
         AudioModeToName(AudioModeFromSettings(Settings)));
+      Ini.WriteBool(SETTINGS_SECTION, 'ShowCheckLogAfterEncode',
+        Settings.ShowCheckLogAfterEncode);
+    finally
+      Ini.Free;
+    end;
+  except
+    // 設定保存の失敗で出力処理を止めない。
+  end;
+end;
+
+// プレビュー画面から切り替えたcheck log表示設定だけをINIへ反映する。
+procedure SaveOutputCheckLogDisplayToIni(ShowCheckLogAfterEncode: Boolean);
+var
+  Ini: TIniFile;
+begin
+  try
+    ForceDirectories(ExtractFilePath(OutputSettingsIniPath));
+    Ini := TIniFile.Create(OutputSettingsIniPath);
+    try
+      Ini.WriteInteger(SETTINGS_SECTION, 'Version', SETTINGS_VERSION);
+      Ini.WriteBool(SETTINGS_SECTION, 'ShowCheckLogAfterEncode',
+        ShowCheckLogAfterEncode);
     finally
       Ini.Free;
     end;

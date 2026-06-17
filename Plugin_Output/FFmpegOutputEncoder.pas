@@ -1,4 +1,4 @@
-﻿unit FFmpegOutputEncoder;
+unit FFmpegOutputEncoder;
 
 // AviUtl2 の OUTPUT_INFO から映像/音声を取得し、FFmpeg で出力ファイルへエンコードする。
 // 出力設定の解釈、FFmpeg encoder/muxer の準備、フレーム変換、進捗/診断ログを担当する。
@@ -13,7 +13,7 @@ type
   TOutputProgressEvent = procedure(Current, Total: Integer; CurrentFps,
     AverageFps, MinFps, MaxFps: Double) of object;
 
-// AviUtl2のOUTPUT_INFOをFFmpegへ流してMP4を書き出す公開入口。
+// AviUtl2のOUTPUT_INFOをFFmpegへ流して現在設定の形式で書き出す公開入口。
 function ExportOutputInfo(oip: POutputInfo; const Settings: TOutputTestSettings;
   out ErrorMessage: string): Boolean;
 // 外部UIから出力中断を要求する。
@@ -859,6 +859,9 @@ var
   AudioStream: PAVStream;
   Frame: PAVFrame;
   Packet: PAVPacket;
+  EffectiveSaveFileName: string;
+  OriginalSaveFileName: string;
+  MuxerFormatName: AnsiString;
   SwsContext: PSwsContext;
   SrcData: array[0..7] of Pointer;
   SrcStride: array[0..7] of Integer;
@@ -919,7 +922,18 @@ begin
   end;
 
   LoadOutputApi;
-  SaveFileUtf8 := UTF8String(string(oip^.savefile));
+  OriginalSaveFileName := Settings.SaveFileName;
+  if OriginalSaveFileName = '' then
+    OriginalSaveFileName := string(oip^.savefile);
+  EffectiveSaveFileName := OriginalSaveFileName;
+  MuxerFormatName := '';
+  if Settings.EncodeMode = oemAlphaProRes then
+  begin
+    MuxerFormatName := 'mov';
+    if not SameText(ExtractFileExt(EffectiveSaveFileName), '.mov') then
+      EffectiveSaveFileName := ChangeFileExt(EffectiveSaveFileName, '.mov');
+  end;
+  SaveFileUtf8 := UTF8String(EffectiveSaveFileName);
   EncoderPixelFormat := OutputPixelFormatFFmpegValue(Settings.Video.PixelFormat);
   if EncoderPixelFormat < 0 then
   begin
@@ -928,7 +942,7 @@ begin
   end;
   OverallStopwatch := TStopwatch.StartNew;
   if OUTPUT_PERF_LOG_ENABLED then
-    PerfLogger := TOutputPerfLogger.Create(string(oip^.savefile), oip^.w, oip^.h, oip^.n,
+    PerfLogger := TOutputPerfLogger.Create(EffectiveSaveFileName, oip^.w, oip^.h, oip^.n,
       string(Settings.Video.EncoderName), Settings.Video.PixelFormatName,
       OutputVideoInputName(VideoInputKind), OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT,
       Settings.Audio.Enabled, string(Settings.Audio.EncoderName), Settings.Audio.BitRate,
@@ -942,11 +956,18 @@ begin
         'rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
         [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
          oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
+    if (PerfLogger <> nil) and (OriginalSaveFileName <> EffectiveSaveFileName) then
+      PerfLogger.Trace(Format('output_filename_adjusted from="%s" to="%s" reason=alpha_prores_requires_mov',
+        [OriginalSaveFileName, EffectiveSaveFileName]));
     if PerfLogger <> nil then
       PerfLogger.Trace(Format('audio_prefetch_mode frame_synced read_chunk_samples=%d',
         [AUDIO_READ_CHUNK_SAMPLES]));
 
-    Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
+    if MuxerFormatName <> '' then
+      Code := avformat_alloc_output_context2(@FormatContext, nil, PAnsiChar(MuxerFormatName),
+        PAnsiChar(SaveFileUtf8))
+    else
+      Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
     if not CheckFFmpeg(Code, 'avformat_alloc_output_context2', ErrorMessage) then
       Exit;
     if PerfLogger <> nil then
@@ -1069,9 +1090,9 @@ begin
         PerfLogger.Trace('func_set_buffer_size called');
     end;
 
-    PreviewWindow := TOutputPreviewWindow.Create(string(oip^.savefile),
+    PreviewWindow := TOutputPreviewWindow.Create(EffectiveSaveFileName,
       OutputEncodeDescription(Settings, EffectiveSettings, VideoInputKind), oip^.w, oip^.h,
-      oip^.n, oip^.rate, oip^.scale, VideoInputKind);
+      oip^.n, oip^.rate, oip^.scale, VideoInputKind, Settings.ShowCheckLogAfterEncode);
     if PerfLogger <> nil then
       PerfLogger.Trace('preview_window_created');
 
