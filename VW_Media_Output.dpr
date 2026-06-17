@@ -9,6 +9,7 @@ uses
   FFmpegOutputEncoder in 'Plugin_Output\FFmpegOutputEncoder.pas',
   FFmpegOutputApiTypes in 'Plugin_Output\FFmpegOutputApiTypes.pas',
   FFmpegOutputPerfLog in 'Plugin_Output\FFmpegOutputPerfLog.pas',
+  FFmpegOutputPreview in 'Plugin_Output\FFmpegOutputPreview.pas',
   FFmpegOutputSettingsDialog in 'Plugin_Output\FFmpegOutputSettingsDialog.pas',
   FFmpegOutputSettingsStorage in 'Plugin_Output\FFmpegOutputSettingsStorage.pas',
   FFmpegOutputVideoInput in 'Plugin_Output\FFmpegOutputVideoInput.pas';

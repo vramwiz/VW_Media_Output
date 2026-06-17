@@ -19,7 +19,8 @@ implementation
 
 uses
   Winapi.Windows, System.Classes, System.Diagnostics, FFmpegApi,
-  FFmpegOutputApiTypes, FFmpegOutputPerfLog, FFmpegOutputVideoInput;
+  FFmpegOutputApiTypes, FFmpegOutputPerfLog, FFmpegOutputPreview,
+  FFmpegOutputVideoInput;
 
 const
   OUTPUT_TEST_FORMAT_PCM16 = 1; // AviUtl2へ要求するPCM16音声format
@@ -237,6 +238,25 @@ begin
   end;
 
   Result := ReceiveAndWritePackets(FormatContext, CodecContext, Stream, Packet, ErrorMessage);
+end;
+
+function OutputEncodeDescription(const Settings: TOutputTestSettings;
+  const EffectiveSettings: TOutputTestSettings): string;
+var
+  AudioText: string;
+begin
+  if EffectiveSettings.Audio.Enabled then
+    AudioText := Format('%s / %s / %d kbps / %d Hz / %d ch',
+      [EffectiveSettings.Audio.CodecName, string(EffectiveSettings.Audio.EncoderName),
+       EffectiveSettings.Audio.BitRate div 1000, EffectiveSettings.Audio.SampleRate,
+       EffectiveSettings.Audio.Channels])
+  else
+    AudioText := '音声なし';
+
+  Result := Format('コンテナ=%s / 映像=%s / encoder=%s / pixel=%s / video_bitrate=%d kbps / preset=%s / 入力=%s / 音声=%s',
+    [Settings.Container, Settings.Video.CodecName, string(Settings.Video.EncoderName),
+     Settings.Video.PixelFormatName, Settings.Video.BitRate div 1000,
+     string(Settings.Video.Preset), OutputVideoInputName, AudioText]);
 end;
 
 // 音声streamとAAC encoderを開く。
@@ -686,6 +706,7 @@ var
   AudioPcm: TBytes;
   AudioSampleCount: Integer;
   AudioTargetSample: Integer;
+  PreviewWindow: TOutputPreviewWindow;
 begin
   Result := False;
   ErrorMessage := '';
@@ -702,6 +723,7 @@ begin
   PerfLogFinished := False;
   PerfStatus := 'not_started';
   AudioSampleCount := 0;
+  PreviewWindow := nil;
 
   EffectiveSettings := Settings;
   if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) then
@@ -850,6 +872,12 @@ begin
         PerfLogger.Trace('func_set_buffer_size called');
     end;
 
+    PreviewWindow := TOutputPreviewWindow.Create(string(oip^.savefile),
+      OutputEncodeDescription(Settings, EffectiveSettings), oip^.w, oip^.h,
+      oip^.n, oip^.rate, oip^.scale);
+    if PerfLogger <> nil then
+      PerfLogger.Trace('preview_window_created');
+
     TotalStopwatch := TStopwatch.StartNew;
     CurrentFps := 0;
     AverageFps := 0;
@@ -885,6 +913,8 @@ begin
         ErrorMessage := 'func_get_video returned nil.';
         Exit;
       end;
+      if PreviewWindow <> nil then
+        PreviewWindow.UpdateFrame(FrameIndex, FrameData);
 
       StageStopwatch := TStopwatch.StartNew;
       Code := av_frame_make_writable(Frame);
@@ -1067,6 +1097,8 @@ begin
 
     if Aborted then
     begin
+      if PreviewWindow <> nil then
+        PreviewWindow.UpdateStatus('中断しました。');
       ErrorMessage := '';
       PerfStatus := 'aborted';
       Result := False;
@@ -1075,11 +1107,15 @@ begin
     begin
       if ErrorMessage = '' then
         ErrorMessage := 'Output stopped after header. Partial MP4 was finalized.';
+      if PreviewWindow <> nil then
+        PreviewWindow.UpdateStatus('異常により停止しました。');
       PerfStatus := 'fatal_after_header';
       Result := False;
     end
     else
     begin
+      if PreviewWindow <> nil then
+        PreviewWindow.UpdateStatus('完了しました。');
       PerfStatus := 'ok';
       Result := True;
     end;
@@ -1091,6 +1127,8 @@ begin
       PerfLogFinished := True;
     end;
   finally
+    if PreviewWindow <> nil then
+      FreeAndNil(PreviewWindow);
     if PerfLogger <> nil then
       PerfLogger.Trace('cleanup_begin');
     if SwsContext <> nil then
