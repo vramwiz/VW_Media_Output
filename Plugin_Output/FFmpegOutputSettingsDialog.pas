@@ -1,10 +1,14 @@
 ﻿unit FFmpegOutputSettingsDialog;
 
+// AviUtl2の設定ボタンから開く、出力設定専用のVCLダイアログを構築する。
+// 保存先を持たないため、ここではモード/encoder/品質/audioの選択だけを扱う。
+
 interface
 
 uses
   Winapi.Windows, FFmpegOutputConfig;
 
+// 出力設定ダイアログを表示し、OK時にSettingsへ選択値を反映する。
 function ExecuteOutputSettingsDialog(OwnerWindow: HWND;
   var Settings: TOutputTestSettings): Boolean;
 
@@ -16,10 +20,11 @@ uses
 type
   TOutputSettingsDialogHandler = class(TComponent)
   public
-    ComboEncoder: TComboBox; // encoder選択
-    ComboQuality: TComboBox; // video quality選択
-    ComboAudio: TComboBox; // audio bitrate選択
-    LabelSettings: TLabel; // 下部の短い設定概要
+    ComboMode    : TComboBox; // 出力モード選択
+    ComboEncoder : TComboBox; // encoder選択
+    ComboQuality : TComboBox; // video quality選択
+    ComboAudio   : TComboBox; // audio bitrate選択
+    LabelSettings: TLabel;    // 下部の短い設定概要
     procedure SettingChange(Sender: TObject);
     procedure UpdateSettingsLabel;
   end;
@@ -34,16 +39,18 @@ end;
 procedure TOutputSettingsDialogHandler.UpdateSettingsLabel;
 var
   Info: TOutputEncoderInfo;
+  Mode: TOutputEncodeModeKind;
   Quality: TOutputVideoQualityKind;
   AudioMode: TOutputAudioModeKind;
   BitRate: Int64;
   AudioText: string;
 begin
-  if (ComboEncoder = nil) or (ComboQuality = nil) or (ComboAudio = nil) or
+  if (ComboMode = nil) or (ComboEncoder = nil) or (ComboQuality = nil) or (ComboAudio = nil) or
      (LabelSettings = nil) or (ComboEncoder.ItemIndex < 0) or
-     (ComboQuality.ItemIndex < 0) or (ComboAudio.ItemIndex < 0) then
+     (ComboMode.ItemIndex < 0) or (ComboQuality.ItemIndex < 0) or (ComboAudio.ItemIndex < 0) then
     Exit;
 
+  Mode := OutputEncodeModeByIndex(ComboMode.ItemIndex);
   Info := OutputEncoderInfo(ComboEncoder.ItemIndex);
   Quality := OutputVideoQualityByIndex(ComboQuality.ItemIndex);
   AudioMode := OutputAudioModeByIndex(ComboAudio.ItemIndex);
@@ -73,10 +80,15 @@ begin
     AudioText := 'AAC 192 kbps';
   end;
 
-  LabelSettings.Caption :=
-    Format('MP4 / %s / %s', [Info.DisplayName, AudioText]) + sLineBreak +
-    Format('Video %s / %.1f Mbps', [OutputVideoQualityName(Quality),
-      BitRate / 1000000.0]);
+  if Mode = oemAlphaProRes then
+    LabelSettings.Caption :=
+      Format('MOV / ProRes 4444 / PA64 alpha / %s', [AudioText]) + sLineBreak +
+      'Transparency-preserving dedicated encode path'
+  else
+    LabelSettings.Caption :=
+      Format('MP4 / %s / %s', [Info.DisplayName, AudioText]) + sLineBreak +
+      Format('Video %s / %.1f Mbps', [OutputVideoQualityName(Quality),
+        BitRate / 1000000.0]);
 end;
 
 // 現在のbitrateからダイアログ選択用のqualityへ戻す。
@@ -114,6 +126,8 @@ function ExecuteOutputSettingsDialog(OwnerWindow: HWND;
   var Settings: TOutputTestSettings): Boolean;
 var
   Dialog: TForm;
+  LabelMode: TLabel;
+  ComboMode: TComboBox;
   LabelEncoder: TLabel;
   ComboEncoder: TComboBox;
   LabelQuality: TLabel;
@@ -203,14 +217,32 @@ begin
     SettingsHeight := Dialog.Canvas.TextHeight('MP4') * 2 + S(14);
     Dialog.ClientWidth := Margin * 2 + EncoderWidth + Gap + QualityWidth;
     Dialog.ClientHeight := Margin + LabelHeight + LabelGap + ComboHeight +
+      RowGap + LabelHeight + LabelGap + ComboHeight +
       RowGap + LabelHeight + LabelGap + ComboHeight + RowGap + SettingsHeight +
       RowGap + ButtonHeight + Margin;
     ButtonTop := Dialog.ClientHeight - Margin - ButtonHeight;
 
+    LabelMode := TLabel.Create(Dialog);
+    LabelMode.Parent := Dialog;
+    LabelMode.Left := Margin;
+    LabelMode.Top := Margin;
+    LabelMode.Caption := 'Output mode';
+
+    ComboMode := TComboBox.Create(Dialog);
+    ComboMode.Parent := Dialog;
+    ComboMode.Left := Margin;
+    ComboMode.Top := LabelMode.Top + LabelHeight + LabelGap;
+    ComboMode.Width := EncoderWidth;
+    ComboMode.Height := ComboHeight;
+    ComboMode.Style := csDropDownList;
+    for Index := 0 to OUTPUT_ENCODE_MODE_COUNT - 1 do
+      ComboMode.Items.Add(OutputEncodeModeName(OutputEncodeModeByIndex(Index)));
+    ComboMode.ItemIndex := OutputEncodeModeIndex(Settings.EncodeMode);
+
     LabelEncoder := TLabel.Create(Dialog);
     LabelEncoder.Parent := Dialog;
     LabelEncoder.Left := Margin;
-    LabelEncoder.Top := Margin;
+    LabelEncoder.Top := ComboMode.Top + ComboHeight + RowGap;
     LabelEncoder.Caption := 'Encoder';
 
     ComboEncoder := TComboBox.Create(Dialog);
@@ -291,10 +323,12 @@ begin
     ButtonCancel.ModalResult := mrCancel;
 
     DialogHandler := TOutputSettingsDialogHandler.Create(Dialog);
+    DialogHandler.ComboMode := ComboMode;
     DialogHandler.ComboEncoder := ComboEncoder;
     DialogHandler.ComboQuality := ComboQuality;
     DialogHandler.ComboAudio := ComboAudio;
     DialogHandler.LabelSettings := LabelSettings;
+    ComboMode.OnChange := DialogHandler.SettingChange;
     ComboEncoder.OnChange := DialogHandler.SettingChange;
     ComboQuality.OnChange := DialogHandler.SettingChange;
     ComboAudio.OnChange := DialogHandler.SettingChange;
@@ -310,6 +344,7 @@ begin
     end;
     ApplyVideoQuality(Settings, OutputVideoQualityByIndex(ComboQuality.ItemIndex));
     ApplyAudioMode(Settings, OutputAudioModeByIndex(ComboAudio.ItemIndex));
+    ApplyEncodeMode(Settings, OutputEncodeModeByIndex(ComboMode.ItemIndex));
     Result := True;
   finally
     Dialog.Free;

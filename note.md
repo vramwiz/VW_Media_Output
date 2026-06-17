@@ -1292,3 +1292,183 @@ AudioMode=Aac192
 - Win64 Debug compile 成功。
 - 警告 0、エラー 0。
 - `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+## 2026-06-17 透過情報保持エンコード用の専用モード追加
+
+目的:
+
+- 透過情報を残したままエンコードする経路を追加する。
+- 既存の高速な通常出力 `YUY2 -> H.264/AAC` とは混ぜず、設定画面で明確に専用モードを選んだ場合だけ別処理を走らせる。
+
+方針:
+
+- 設定に `EncodeMode` を追加。
+  - `Normal`: 従来どおり MP4 / H.264 系 / YUY2 入力。
+  - `AlphaProRes`: MOV / ProRes 4444 / PA64 入力。
+- AviUtl2 SDK の `func_get_video` で `PA64` を要求する。
+  - `PA64` は `DXGI_FORMAT_R16G16B16A16_UNORM(乗算済みα)`。
+  - FFmpeg へは `rgba64le` 入力として渡す。
+- FFmpeg 側は `prores_ks` + `yuva444p10le` を使う。
+  - encoder private option として `profile=4444`、`alpha_bits=16` を設定する。
+- pixel format 番号は固定値にせず、`av_get_pix_fmt` で `rgba64le` / `yuva444p10le` を取得する。
+  - FFmpeg enum 値のバージョン差を避けるため。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputConfig.pas`
+  - `TOutputEncodeModeKind` を追加。
+  - `opfYuva444p10le` を追加。
+  - `ApplyEncodeMode` を追加し、透過モード時に MOV / ProRes 4444 / `yuva444p10le` へ切り替える。
+- `Plugin_Output\FFmpegOutputSettingsDialog.pas`
+  - 設定画面の先頭に `Output mode` コンボを追加。
+  - `Alpha MOV / ProRes 4444` を選んだ場合、概要に `PA64 alpha` と専用経路であることを表示する。
+- `Plugin_Output\FFmpegOutputSettingsStorage.pas`
+  - INI `Version=2`。
+  - `EncodeMode=Normal` / `EncodeMode=AlphaProRes` を保存・読み込みする。
+- `Plugin_Output\FFmpegOutputVideoInput.pas`
+  - 入力形式を固定定数ではなく `TOutputVideoInputKind` 引数で選べるよう変更。
+  - `ovikPa64` を追加。
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - `Settings.EncodeMode = oemAlphaProRes` のときだけ `PA64` 入力を要求する。
+  - `prores_ks` に ProRes 4444 用 option を設定する。
+  - 通常モードの QSV/NVENC/AMF エラー補足は透過モードでは出さないようにした。
+- `Plugin_Output\FFmpegOutputPreview.pas`
+  - プレビューも入力形式を引数で受け取り、PA64 を表示できるようにした。
+- `Plugin_Output\FFmpegApi.pas`
+  - `av_get_pix_fmt` をロードする定義を追加。
+- `VW_Media_Output.dpr`
+  - 保存ダイアログ下部の設定概要で、透過モード時に `alpha` を明示する。
+
+確認:
+
+- Win64 Debug compile 成功。
+- Win64 Release compile 成功。
+- 警告 0、エラー 0。
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー成功。
+
+次の実機確認:
+
+- AviUtl2 の設定画面で `Output mode = Alpha MOV / ProRes 4444` を選ぶ。
+- 透過あり素材を書き出し、出力 `.mov` を読み戻して alpha が残っていることを確認する。
+- `.perf.log` の `input=PA64/RGBA64 premultiplied alpha` と `encoder=prores_ks` を確認する。
+- 色の縁が暗く見える場合は、PA64 の乗算済みαを非乗算へ戻す処理が必要かを検討する。
+
+## 2026-06-17 AlphaProRes の全面透明調査ログ追加
+
+状況:
+
+- VideoMiner 側で ProRes 4444 MOV を確認すると、市松模様だけになり、全ピクセルが透明として扱われていた。
+- 疑わしい箇所は出力プラグイン側の PA64 入力から `yuva444p10le` へ渡す経路。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputEncoder.pas`
+  - AlphaProRes / PA64 入力時だけ、Debug `.perf.log` に alpha 診断を出すようにした。
+  - `alpha_source`:
+    - AviUtl2 の `func_get_video(frame, PA64)` 直後の RGBA64 alpha 値を集計する。
+    - `alpha_min` / `alpha_max` / `zero_pct` / `full_pct` / サンプル値を出す。
+  - `alpha_after_sws`:
+    - `sws_scale` 後の `yuva444p10le` alpha plane を集計する。
+    - `data3_nil` / `linesize3` / min/max / zero/full 比率を出す。
+  - `DstData[3]` / `DstStride[3]` を `Frame^.data[3]` / `Frame^.linesize[3]` に接続した。
+    - これまでは `data[0..2]` だけを `sws_scale` へ渡していたため、`yuva444p10le` の alpha plane が正しく埋まらず、全面透明になる可能性が高かった。
+
+ログの見方:
+
+- `alpha_source alpha_max=0` なら AviUtl2 から PA64 で受け取った時点で alpha が 0。
+- `alpha_source alpha_max=65535` など正常で、`alpha_after_sws max=0` なら FFmpeg 変換側で alpha が落ちている。
+- `alpha_after_sws data3_nil=True` なら encoder frame 側に alpha plane が確保されていない。
+- `alpha_after_sws max=1023` が出れば、少なくとも `yuva444p10le` の alpha plane までは透明情報が届いている。
+
+確認:
+
+- Win64 Debug の Delphi compile 本体は成功、警告 0 / エラー 0。
+- post-build の `.dll` -> `.auo2` コピーは、AviUtl2 が `VW_Media_Output.auo2` を使用中のため失敗。
+- AviUtl2 を閉じて再ビルドすれば、更新版 `.auo2` が配置される。
+
+## コメント記述ルール
+
+基本方針:
+
+- コメントは、処理を読めば分かることをなぞるのではなく、目的、責務、注意点、状態の意味を補うために書く。
+- 古い仕様や現在の実装と食い違うコメントは、見つけた時点で更新する。
+- 不要なコメントや重複したコメントを増やしすぎない。
+- `var` ブロック内にローカル関数やローカル手続きを内包しない。
+  - 補助処理が必要な場合は、同じ `implementation` 内の独立した関数/手続きとして切り出す。
+  - この形を見つけた場合は、コメント追加だけで済ませず構造も直す。
+
+ユニット先頭:
+
+- 各ユニットの先頭には、そのユニットの目的や担当範囲を `//` コメントで記述する。
+- 依存関係や「ここには書かない処理」が重要な場合は、その注意も先頭コメントに含める。
+
+フィールド:
+
+- フィールドの意味は、フィールド宣言の右側に 1 行コメントとして `//` で書く。
+- 同じブロック内では、フィールド名の後ろに置く型区切りの `:` の X 座標を揃える。
+- 同じブロック内では、`//` の X 座標を揃える。
+- コメント本文の先頭に `file:` や `playback:` のような分類ラベルは付けない。
+- コメント本文は、そのフィールド単体の意味を自然な日本語で書く。
+- 同じクラス内で長い共通接頭辞を持つフィールドが並び、コメントや整列を読みにくくしている場合は、接頭辞を削ってよい。
+  - 例: `FAutoCheckDarkStartMs` は、自動チェック専用 manager 内なら `FDarkStartMs` にしてよい。
+  - ただし `property ... read/write ...` で外部公開名と対応している backing field は、無理に短縮しない。
+  - この程度のフィールド名変更が必要なら、コメントだけで済ませずコードも追従する。
+- 例:
+
+```pascal
+FVideoFile      : string;  // 現在開いている動画ファイル
+FSeekPositionMs : Integer; // UI 側で保持する現在位置 ms
+FSeekMaxMs      : Integer; // シーク可能な最大位置 ms
+```
+
+定数:
+
+- 定数の意味は、定数宣言の右側に 1 行コメントとして `//` で書く。
+- 同じ `const` ブロック内では、`=` の X 座標を揃える。
+- 同じ `const` ブロック内では、`//` の X 座標を揃える。
+- コメント本文は、その定数が判定や処理で何の基準になるかを自然な日本語で書く。
+- 同じユニット内だけで使う定数は、長い共通接頭辞やユニット内の文脈で明らかな語を削ってよい。
+  - 例: 自動チェック専用 manager 内なら `AUTO_CHECK_AUDIO_SILENCE_PEAK` は `SILENCE_PEAK` にしてよい。
+  - 外部公開される定数や、他ユニットから参照される可能性がある定数では、意味が衝突しない名前を優先する。
+  - この程度の定数名変更が必要なら、コメントだけで済ませずコードも追従する。
+- 例:
+
+```pascal
+VIDEO_AUDIO_SYNC_LAG_MS       = 60;   // 音声同期のためにフレーム破棄を検討する遅れ幅 ms
+VIDEO_DEFAULT_FRAME_DURATION  = 33;   // FPS 不明時に使う既定フレーム長 ms
+VIDEO_END_TOLERANCE_MS        = 1500; // 終端付近として扱う残り時間 ms
+```
+
+プロパティ:
+
+- `property` 宣言は、横幅 112 文字以内に収まる場合は折り返さない。
+- 112 文字を超える場合だけ、既存の Delphi コードの読みやすい位置で折り返す。
+
+メソッド:
+
+- メソッドの意味は、メソッド宣言または実装の上に 1 行コメントとして書く。
+- `procedure` / `function` 宣言は、横幅 112 文字以内に収まる場合は折り返さない。
+- 112 文字を超える場合だけ、既存の Delphi コードの読みやすい位置で折り返す。
+- 引数の意味が複雑な場合は、複数行コメントにしてよい。
+- コメントと対象メソッドの間に空行は入れない。
+- 例:
+
+```pascal
+// 指定位置へシークし、必要なら再生状態を復元する
+procedure SeekToMs(PositionMs: Integer; ResumeIfPlaying: Boolean = True);
+```
+
+複雑な引数がある場合:
+
+```pascal
+// フレームを表示用 BGRX32 バッファへ直接デコードする
+// Buffer       : 出力先バッファ先頭
+// BufferStride : 1 行あたりのバイト数
+function PrepareFrameBuffer(Decoder: TFFmpegDecoder; out Buffer: Pointer;
+  out BufferStride: Integer; out ErrorMessage: string): Boolean;
+```
+
+空行:
+
+- コメントと対象の宣言/実装の間には空行を入れない。
+- コメントブロック内でも、意味の切れ目が明確に必要な場合以外は空行を入れない。

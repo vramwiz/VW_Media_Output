@@ -1,4 +1,4 @@
-unit FFmpegOutputApiTypes;
+﻿unit FFmpegOutputApiTypes;
 
 interface
 

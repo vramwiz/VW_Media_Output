@@ -1,11 +1,15 @@
 ﻿unit FFmpegOutputEncoder;
 
+// AviUtl2 の OUTPUT_INFO から映像/音声を取得し、FFmpeg で出力ファイルへエンコードする。
+// 出力設定の解釈、FFmpeg encoder/muxer の準備、フレーム変換、進捗/診断ログを担当する。
+
 interface
 
 uses
   System.SysUtils, System.Math, AviUtl2OutputTypes, FFmpegOutputConfig;
 
 type
+  // 出力進捗 UI へ現在位置と瞬間/平均/最小/最大 FPS を通知する。
   TOutputProgressEvent = procedure(Current, Total: Integer; CurrentFps,
     AverageFps, MinFps, MaxFps: Double) of object;
 
@@ -23,35 +27,37 @@ uses
   FFmpegOutputVideoInput;
 
 const
-  OUTPUT_TEST_FORMAT_PCM16 = 1; // AviUtl2へ要求するPCM16音声format
-  OUTPUT_VIDEO_BUFFER_COUNT = 8; // AviUtl2のvideo先読みbuffer数
-  OUTPUT_AUDIO_BUFFER_COUNT = 16; // AviUtl2のaudio先読みbuffer数
-  AUDIO_ENCODER_FRAME_SAMPLES = 1024; // AACへ渡す1frameあたりのsample数
-  AUDIO_READ_CHUNK_SAMPLES = AUDIO_ENCODER_FRAME_SAMPLES * 16; // AviUtl2からまとめて取得するsample数
-  AV_SAMPLE_FMT_FLTP = 8; // FFmpegのAAC encoder入力sample format
+  OUTPUT_TEST_FORMAT_PCM16    = 1;                                // AviUtl2へ要求するPCM16音声format
+  OUTPUT_VIDEO_BUFFER_COUNT   = 8;                                // AviUtl2のvideo先読みbuffer数
+  OUTPUT_AUDIO_BUFFER_COUNT   = 16;                               // AviUtl2のaudio先読みbuffer数
+  AUDIO_ENCODER_FRAME_SAMPLES = 1024;                             // AACへ渡す1frameあたりのsample数
+  AUDIO_READ_CHUNK_SAMPLES    = AUDIO_ENCODER_FRAME_SAMPLES * 16; // AviUtl2からまとめて取得するsample数
+  AV_SAMPLE_FMT_FLTP          = 8;                                // FFmpegのAAC encoder入力sample format
+  ALPHA_LOG_FIRST_FRAMES      = 5;                                // alpha診断を必ず出す先頭frame数
+  ALPHA_LOG_EVERY_N_FRAMES    = 30;                               // alpha診断を定期出力する間隔
 
 var
-  CurrentAborted: Boolean;
-  avformat_alloc_output_context2: Tavformat_alloc_output_context2;
-  avformat_new_stream: Tavformat_new_stream;
-  avformat_write_header: Tavformat_write_header;
-  av_interleaved_write_frame: Tav_interleaved_write_frame;
-  av_write_trailer: Tav_write_trailer;
-  avformat_free_context: Tavformat_free_context;
-  avio_open: Tavio_open;
-  avio_closep: Tavio_closep;
-  avcodec_find_encoder_by_name: Tavcodec_find_encoder_by_name;
-  avcodec_parameters_from_context: Tavcodec_parameters_from_context;
-  avcodec_send_frame: Tavcodec_send_frame;
-  avcodec_receive_packet: Tavcodec_receive_packet;
-  av_packet_rescale_ts: Tav_packet_rescale_ts;
-  av_frame_get_buffer: Tav_frame_get_buffer;
-  av_frame_make_writable: Tav_frame_make_writable;
-  av_opt_set: Tav_opt_set;
-  av_opt_set_int: Tav_opt_set_int;
-  av_opt_set_sample_fmt: Tav_opt_set_sample_fmt;
-  av_opt_set_chlayout: Tav_opt_set_chlayout;
-  OutputApiLoaded: Boolean;
+  CurrentAborted                  : Boolean;                          // UI側から出力中断が要求されたか
+  avformat_alloc_output_context2  : Tavformat_alloc_output_context2;  // muxer contextを作成するFFmpeg関数
+  avformat_new_stream             : Tavformat_new_stream;             // muxerへstreamを追加するFFmpeg関数
+  avformat_write_header           : Tavformat_write_header;           // コンテナheaderを書き込むFFmpeg関数
+  av_interleaved_write_frame      : Tav_interleaved_write_frame;      // packetをstream間で時刻順に書くFFmpeg関数
+  av_write_trailer                : Tav_write_trailer;                // コンテナtrailerを書き込むFFmpeg関数
+  avformat_free_context           : Tavformat_free_context;           // muxer contextを解放するFFmpeg関数
+  avio_open                       : Tavio_open;                       // 出力先IOを開くFFmpeg関数
+  avio_closep                     : Tavio_closep;                     // 出力先IOを閉じるFFmpeg関数
+  avcodec_find_encoder_by_name    : Tavcodec_find_encoder_by_name;    // 名前からencoderを取得するFFmpeg関数
+  avcodec_parameters_from_context : Tavcodec_parameters_from_context; // codec contextをstreamへ反映するFFmpeg関数
+  avcodec_send_frame              : Tavcodec_send_frame;              // encoderへframeを渡すFFmpeg関数
+  avcodec_receive_packet          : Tavcodec_receive_packet;          // encoderからpacketを受け取るFFmpeg関数
+  av_packet_rescale_ts            : Tav_packet_rescale_ts;            // packet timestampをstream時刻へ変換するFFmpeg関数
+  av_frame_get_buffer             : Tav_frame_get_buffer;             // frame用bufferを確保するFFmpeg関数
+  av_frame_make_writable          : Tav_frame_make_writable;          // frame bufferを書き込み可能にするFFmpeg関数
+  av_opt_set                      : Tav_opt_set;                      // FFmpeg optionへ文字列値を設定する関数
+  av_opt_set_int                  : Tav_opt_set_int;                  // FFmpeg optionへ整数値を設定する関数
+  av_opt_set_sample_fmt           : Tav_opt_set_sample_fmt;           // FFmpeg optionへsample formatを設定する関数
+  av_opt_set_chlayout             : Tav_opt_set_chlayout;             // FFmpeg optionへchannel layoutを設定する関数
+  OutputApiLoaded                 : Boolean;                          // 出力用FFmpeg関数を遅延取得済みか
 
 // 中断要求フラグを立てる。
 procedure RequestOutputAbort;
@@ -59,6 +65,7 @@ begin
   CurrentAborted := True;
 end;
 
+// UIまたはAviUtl2側から中断要求が出ているか返す。
 function OutputAbortRequested(oip: POutputInfo): Boolean;
 begin
   Result := CurrentAborted;
@@ -74,26 +81,36 @@ begin
 
   TFFmpegApi.EnsureLoaded;
 
-  avformat_alloc_output_context2 := Tavformat_alloc_output_context2(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_alloc_output_context2'));
+  avformat_alloc_output_context2 := Tavformat_alloc_output_context2(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_alloc_output_context2'));
   avformat_new_stream := Tavformat_new_stream(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_new_stream'));
-  avformat_write_header := Tavformat_write_header(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_write_header'));
-  av_interleaved_write_frame := Tav_interleaved_write_frame(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'av_interleaved_write_frame'));
+  avformat_write_header := Tavformat_write_header(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_write_header'));
+  av_interleaved_write_frame := Tav_interleaved_write_frame(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'av_interleaved_write_frame'));
   av_write_trailer := Tav_write_trailer(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'av_write_trailer'));
-  avformat_free_context := Tavformat_free_context(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_free_context'));
+  avformat_free_context := Tavformat_free_context(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avformat_free_context'));
   avio_open := Tavio_open(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avio_open'));
   avio_closep := Tavio_closep(TFFmpegApi.LoadProc(TFFmpegApi.FAvFormat, 'avio_closep'));
 
-  avcodec_find_encoder_by_name := Tavcodec_find_encoder_by_name(TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_find_encoder_by_name'));
-  avcodec_parameters_from_context := Tavcodec_parameters_from_context(TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_parameters_from_context'));
+  avcodec_find_encoder_by_name := Tavcodec_find_encoder_by_name(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_find_encoder_by_name'));
+  avcodec_parameters_from_context := Tavcodec_parameters_from_context(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_parameters_from_context'));
   avcodec_send_frame := Tavcodec_send_frame(TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_send_frame'));
-  avcodec_receive_packet := Tavcodec_receive_packet(TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_receive_packet'));
-  av_packet_rescale_ts := Tav_packet_rescale_ts(TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'av_packet_rescale_ts'));
+  avcodec_receive_packet := Tavcodec_receive_packet(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'avcodec_receive_packet'));
+  av_packet_rescale_ts := Tav_packet_rescale_ts(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvCodec, 'av_packet_rescale_ts'));
 
   av_frame_get_buffer := Tav_frame_get_buffer(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_frame_get_buffer'));
-  av_frame_make_writable := Tav_frame_make_writable(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_frame_make_writable'));
+  av_frame_make_writable := Tav_frame_make_writable(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_frame_make_writable'));
   av_opt_set := Tav_opt_set(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_opt_set'));
   av_opt_set_int := Tav_opt_set_int(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_opt_set_int'));
-  av_opt_set_sample_fmt := Tav_opt_set_sample_fmt(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_opt_set_sample_fmt'));
+  av_opt_set_sample_fmt := Tav_opt_set_sample_fmt(
+    TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_opt_set_sample_fmt'));
   av_opt_set_chlayout := Tav_opt_set_chlayout(TFFmpegApi.LoadProc(TFFmpegApi.FAvUtil, 'av_opt_set_chlayout'));
 
   OutputApiLoaded := True;
@@ -107,6 +124,7 @@ begin
     ErrorMessage := Operation + ': ' + TFFmpegApi.ErrorText(ResultCode);
 end;
 
+// PCM16音声buffer内の最大絶対振幅を返す。
 function Pcm16MaxAbs(Data: Pointer; SampleCount, Channels: Integer): Integer;
 var
   Values: PSmallInt;
@@ -131,6 +149,150 @@ begin
   end;
 end;
 
+// alpha診断ログを出す対象フレームか返す。
+function ShouldLogAlphaFrame(FrameIndex, TotalFrames: Integer): Boolean;
+begin
+  Result := (FrameIndex < ALPHA_LOG_FIRST_FRAMES) or
+    ((ALPHA_LOG_EVERY_N_FRAMES > 0) and ((FrameIndex mod ALPHA_LOG_EVERY_N_FRAMES) = 0)) or
+    (FrameIndex = TotalFrames - 1);
+end;
+
+// PA64入力フレームのalpha値分布をログ用文字列にする。
+function Pa64InputAlphaStatsText(FrameData: Pointer; Width, Height: Integer): string;
+var
+  Alpha: Cardinal;
+  FullCount: Int64;
+  MaxAlpha: Cardinal;
+  MinAlpha: Cardinal;
+  NonFullCount: Int64;
+  Pixel: PWord;
+  PixelCount: Int64;
+  Row: Integer;
+  RowData: PByte;
+  SampleA0: Cardinal;
+  SampleCenter: Cardinal;
+  Stride: Integer;
+  X: Integer;
+  ZeroCount: Int64;
+begin
+  if (FrameData = nil) or (Width <= 0) or (Height <= 0) then
+  begin
+    Result := 'pa64_input invalid';
+    Exit;
+  end;
+
+  Stride := OutputVideoInputStrideBytes(ovikPa64, Width);
+  PixelCount := Int64(Width) * Height;
+  MinAlpha := High(Cardinal);
+  MaxAlpha := 0;
+  ZeroCount := 0;
+  FullCount := 0;
+  NonFullCount := 0;
+  SampleA0 := 0;
+  SampleCenter := 0;
+
+  for Row := 0 to Height - 1 do
+  begin
+    RowData := PByte(NativeUInt(FrameData) + NativeUInt(Row * Stride));
+    Pixel := PWord(RowData);
+    for X := 0 to Width - 1 do
+    begin
+      Inc(Pixel, 3);
+      Alpha := Pixel^;
+      Inc(Pixel);
+      if (Row = 0) and (X = 0) then
+        SampleA0 := Alpha;
+      if (Row = Height div 2) and (X = Width div 2) then
+        SampleCenter := Alpha;
+      if Alpha < MinAlpha then
+        MinAlpha := Alpha;
+      if Alpha > MaxAlpha then
+        MaxAlpha := Alpha;
+      if Alpha = 0 then
+        Inc(ZeroCount);
+      if Alpha = 65535 then
+        Inc(FullCount)
+      else
+        Inc(NonFullCount);
+    end;
+  end;
+
+  if PixelCount <= 0 then
+    PixelCount := 1;
+  Result := Format(
+    'pa64_input alpha_min=%d alpha_max=%d zero=%d full=%d non_full=%d ' +
+    'zero_pct=%.3f full_pct=%.3f sample_a00=%d sample_acenter=%d',
+    [MinAlpha, MaxAlpha, ZeroCount, FullCount, NonFullCount,
+     ZeroCount * 100.0 / PixelCount, FullCount * 100.0 / PixelCount,
+     SampleA0, SampleCenter]);
+end;
+
+// 16bit planeの値分布をログ用文字列にする。
+function Plane16StatsText(const LabelText: string; Data: PByte; Width, Height,
+  Linesize: Integer; FullValue: Cardinal): string;
+var
+  FullCount: Int64;
+  MaxValue: Cardinal;
+  MinValue: Cardinal;
+  NonFullCount: Int64;
+  PixelCount: Int64;
+  Row: Integer;
+  RowData: PWord;
+  Sample0: Cardinal;
+  SampleCenter: Cardinal;
+  Value: Cardinal;
+  X: Integer;
+  ZeroCount: Int64;
+begin
+  if (Data = nil) or (Width <= 0) or (Height <= 0) or (Linesize = 0) then
+  begin
+    Result := LabelText + ' invalid';
+    Exit;
+  end;
+
+  PixelCount := Int64(Width) * Height;
+  MinValue := High(Cardinal);
+  MaxValue := 0;
+  ZeroCount := 0;
+  FullCount := 0;
+  NonFullCount := 0;
+  Sample0 := 0;
+  SampleCenter := 0;
+
+  for Row := 0 to Height - 1 do
+  begin
+    RowData := PWord(NativeUInt(Data) + NativeUInt(Row * Linesize));
+    for X := 0 to Width - 1 do
+    begin
+      Value := RowData^;
+      Inc(RowData);
+      if (Row = 0) and (X = 0) then
+        Sample0 := Value;
+      if (Row = Height div 2) and (X = Width div 2) then
+        SampleCenter := Value;
+      if Value < MinValue then
+        MinValue := Value;
+      if Value > MaxValue then
+        MaxValue := Value;
+      if Value = 0 then
+        Inc(ZeroCount);
+      if Value = FullValue then
+        Inc(FullCount)
+      else
+        Inc(NonFullCount);
+    end;
+  end;
+
+  if PixelCount <= 0 then
+    PixelCount := 1;
+  Result := Format(
+    '%s min=%d max=%d zero=%d full=%d non_full=%d zero_pct=%.3f full_pct=%.3f sample00=%d sample_center=%d',
+    [LabelText, MinValue, MaxValue, ZeroCount, FullCount, NonFullCount,
+     ZeroCount * 100.0 / PixelCount, FullCount * 100.0 / PixelCount,
+     Sample0, SampleCenter]);
+end;
+
+// 映像encoderを開けなかった理由をユーザー向けに整形する。
 function VideoEncoderOpenErrorMessage(ResultCode: Integer;
   const Settings: TOutputTestSettings): string;
 var
@@ -144,20 +306,23 @@ begin
     [Detail, Settings.Video.CodecName, string(Settings.Video.EncoderName),
      Settings.Video.PixelFormatName, string(Settings.Video.Preset)]);
 
-  case Settings.Video.EncoderKind of
-    oekNvidiaNvenc:
-      Result := Result + #13#10#13#10 +
-        'NVIDIA NVENC is present in the FFmpeg DLL, but it could not be opened. ' +
-        'If the error is "Function not implemented", the NVIDIA driver is often too old ' +
-        'for the NVENC API required by this FFmpeg build, or NVENC is unavailable on this GPU.';
-    oekAmdAmf:
-      Result := Result + #13#10#13#10 +
-        'AMD AMF is present in the FFmpeg DLL, but it could not be opened. ' +
-        'Check that an AMD GPU and current AMD driver/runtime are available.';
-    oekIntelQsv:
-      Result := Result + #13#10#13#10 +
-        'Intel QSV is present in the FFmpeg DLL, but it could not be opened. ' +
-        'Check that the Intel GPU driver/runtime is available.';
+  if Settings.EncodeMode = oemNormal then
+  begin
+    case Settings.Video.EncoderKind of
+      oekNvidiaNvenc:
+        Result := Result + #13#10#13#10 +
+          'NVIDIA NVENC is present in the FFmpeg DLL, but it could not be opened. ' +
+          'If the error is "Function not implemented", the NVIDIA driver is often too old ' +
+          'for the NVENC API required by this FFmpeg build, or NVENC is unavailable on this GPU.';
+      oekAmdAmf:
+        Result := Result + #13#10#13#10 +
+          'AMD AMF is present in the FFmpeg DLL, but it could not be opened. ' +
+          'Check that an AMD GPU and current AMD driver/runtime are available.';
+      oekIntelQsv:
+        Result := Result + #13#10#13#10 +
+          'Intel QSV is present in the FFmpeg DLL, but it could not be opened. ' +
+          'Check that the Intel GPU driver/runtime is available.';
+    end;
   end;
 end;
 
@@ -197,8 +362,9 @@ begin
 end;
 
 // encoderから出てきたpacketをmuxerへ書き込む。
-function ReceiveAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
-  Stream: PAVStream; Packet: PAVPacket; out ErrorMessage: string): Boolean;
+function ReceiveAndWritePackets(FormatContext: PAVFormatContext;
+  CodecContext: PAVCodecContext; Stream: PAVStream; Packet: PAVPacket;
+  out ErrorMessage: string): Boolean;
 var
   PacketCount: Integer;
 begin
@@ -207,8 +373,9 @@ begin
 end;
 
 // frame送信とpacket回収をまとめて行う。Frame=nilでflushする。
-function SendFrameAndWritePackets(FormatContext: PAVFormatContext; CodecContext: PAVCodecContext;
-  Stream: PAVStream; Packet: PAVPacket; Frame: PAVFrame; out ErrorMessage: string): Boolean;
+function SendFrameAndWritePackets(FormatContext: PAVFormatContext;
+  CodecContext: PAVCodecContext; Stream: PAVStream; Packet: PAVPacket;
+  Frame: PAVFrame; out ErrorMessage: string): Boolean;
 var
   Code: Integer;
   PacketCount: Integer;
@@ -240,8 +407,10 @@ begin
   Result := ReceiveAndWritePackets(FormatContext, CodecContext, Stream, Packet, ErrorMessage);
 end;
 
+// プレビュー/check logへ表示するエンコード設定説明を作る。
 function OutputEncodeDescription(const Settings: TOutputTestSettings;
-  const EffectiveSettings: TOutputTestSettings): string;
+  const EffectiveSettings: TOutputTestSettings;
+  VideoInputKind: TOutputVideoInputKind): string;
 var
   AudioText: string;
 begin
@@ -253,10 +422,22 @@ begin
   else
     AudioText := '音声なし';
 
-  Result := Format('コンテナ=%s / 映像=%s / encoder=%s / pixel=%s / video_bitrate=%d kbps / preset=%s / 入力=%s / 音声=%s',
+  Result := Format('コンテナ=%s / 映像=%s / encoder=%s / pixel=%s / ' +
+    'video_bitrate=%d kbps / preset=%s / 入力=%s / 音声=%s',
     [Settings.Container, Settings.Video.CodecName, string(Settings.Video.EncoderName),
      Settings.Video.PixelFormatName, Settings.Video.BitRate div 1000,
-     string(Settings.Video.Preset), OutputVideoInputName, AudioText]);
+     string(Settings.Video.Preset), OutputVideoInputName(VideoInputKind), AudioText]);
+end;
+
+// 設定からAviUtl2へ要求する映像入力形式を決める。
+function OutputVideoInputKindForSettings(const Settings: TOutputTestSettings): TOutputVideoInputKind;
+begin
+  case Settings.EncodeMode of
+    oemAlphaProRes:
+      Result := ovikPa64;
+  else
+    Result := OUTPUT_VIDEO_INPUT_KIND;
+  end;
 end;
 
 // 音声streamとAAC encoderを開く。
@@ -404,7 +585,8 @@ begin
     if PerfLogger <> nil then
     begin
       PerfLogger.Add(opsGetAudio, StopwatchElapsedMs(StageStopwatch));
-      PerfLogger.Trace(Format('audio_prefetch_read_end sample=%d requested=%d readed=%d elapsed_ms=%.3f data_nil=%s',
+      PerfLogger.Trace(Format('audio_prefetch_read_end sample=%d requested=%d ' +
+        'readed=%d elapsed_ms=%.3f data_nil=%s',
         [SampleStart, SamplesToRead, Readed, StopwatchElapsedMs(StageStopwatch),
          BoolToStr(AudioData = nil, True)]));
     end;
@@ -707,6 +889,7 @@ var
   AudioSampleCount: Integer;
   AudioTargetSample: Integer;
   PreviewWindow: TOutputPreviewWindow;
+  VideoInputKind: TOutputVideoInputKind;
 begin
   Result := False;
   ErrorMessage := '';
@@ -726,6 +909,7 @@ begin
   PreviewWindow := nil;
 
   EffectiveSettings := Settings;
+  VideoInputKind := OutputVideoInputKindForSettings(Settings);
   if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) then
   begin
     if oip^.audio_rate > 0 then
@@ -737,24 +921,30 @@ begin
   LoadOutputApi;
   SaveFileUtf8 := UTF8String(string(oip^.savefile));
   EncoderPixelFormat := OutputPixelFormatFFmpegValue(Settings.Video.PixelFormat);
+  if EncoderPixelFormat < 0 then
+  begin
+    ErrorMessage := 'FFmpeg pixel format was not found: ' + Settings.Video.PixelFormatName;
+    Exit;
+  end;
   OverallStopwatch := TStopwatch.StartNew;
   if OUTPUT_PERF_LOG_ENABLED then
     PerfLogger := TOutputPerfLogger.Create(string(oip^.savefile), oip^.w, oip^.h, oip^.n,
       string(Settings.Video.EncoderName), Settings.Video.PixelFormatName,
-      OutputVideoInputName, OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT,
+      OutputVideoInputName(VideoInputKind), OUTPUT_VIDEO_BUFFER_COUNT, OUTPUT_AUDIO_BUFFER_COUNT,
       Settings.Audio.Enabled, string(Settings.Audio.EncoderName), Settings.Audio.BitRate,
       EffectiveSettings.Audio.SampleRate, EffectiveSettings.Audio.Channels)
   else
     PerfLogger := nil;
 
   try
-  if PerfLogger <> nil then
-    PerfLogger.Trace(Format('encode_begin output_info w=%d h=%d frames=%d rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
-      [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
-       oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
-  if PerfLogger <> nil then
-    PerfLogger.Trace(Format('audio_prefetch_mode frame_synced read_chunk_samples=%d',
-      [AUDIO_READ_CHUNK_SAMPLES]));
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('encode_begin output_info w=%d h=%d frames=%d ' +
+        'rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
+        [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
+         oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
+    if PerfLogger <> nil then
+      PerfLogger.Trace(Format('audio_prefetch_mode frame_synced read_chunk_samples=%d',
+        [AUDIO_READ_CHUNK_SAMPLES]));
 
     Code := avformat_alloc_output_context2(@FormatContext, nil, nil, PAnsiChar(SaveFileUtf8));
     if not CheckFFmpeg(Code, 'avformat_alloc_output_context2', ErrorMessage) then
@@ -793,6 +983,12 @@ begin
         av_opt_set(CodecPublic^.priv_data, 'preset', PAnsiChar(Settings.Video.Preset), 0);
       if Settings.Video.EncoderKind = oekCpuX264 then
         av_opt_set(CodecPublic^.priv_data, 'crf', PAnsiChar(AnsiString(IntToStr(Settings.Video.Quality))), 0);
+      if Settings.EncodeMode = oemAlphaProRes then
+      begin
+        av_opt_set(CodecPublic^.priv_data, 'profile', PAnsiChar(AnsiString('4444')), 0);
+        if Assigned(av_opt_set_int) then
+          av_opt_set_int(CodecPublic^.priv_data, 'alpha_bits', 16, 0);
+      end;
     end;
 
     Code := TFFmpegApi.avcodec_open2(CodecContext, Codec, nil);
@@ -819,7 +1015,8 @@ begin
     if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) and
       Assigned(oip^.func_get_audio) and Settings.Audio.Enabled then
     begin
-      if not OpenAudioEncoder(FormatContext, EffectiveSettings, AudioCodecContext, AudioStream, ErrorMessage) then
+      if not OpenAudioEncoder(FormatContext, EffectiveSettings,
+        AudioCodecContext, AudioStream, ErrorMessage) then
         Exit;
       if PerfLogger <> nil then
         PerfLogger.Trace(Format('audio encoder opened sample_rate=%d channels=%d total_samples=%d',
@@ -858,7 +1055,7 @@ begin
       Exit;
     end;
 
-    SwsContext := TFFmpegApi.sws_getContext(oip^.w, oip^.h, OutputVideoInputFFmpegPixelFormat,
+    SwsContext := TFFmpegApi.sws_getContext(oip^.w, oip^.h, OutputVideoInputFFmpegPixelFormat(VideoInputKind),
       oip^.w, oip^.h, EncoderPixelFormat, SWS_BILINEAR, nil, nil, nil);
     if SwsContext = nil then
     begin
@@ -873,8 +1070,8 @@ begin
     end;
 
     PreviewWindow := TOutputPreviewWindow.Create(string(oip^.savefile),
-      OutputEncodeDescription(Settings, EffectiveSettings), oip^.w, oip^.h,
-      oip^.n, oip^.rate, oip^.scale);
+      OutputEncodeDescription(Settings, EffectiveSettings, VideoInputKind), oip^.w, oip^.h,
+      oip^.n, oip^.rate, oip^.scale, VideoInputKind);
     if PerfLogger <> nil then
       PerfLogger.Trace('preview_window_created');
 
@@ -896,7 +1093,7 @@ begin
       end;
 
       StageStopwatch := TStopwatch.StartNew;
-      FrameData := oip^.func_get_video(FrameIndex, OutputVideoInputAviUtlFormat);
+      FrameData := oip^.func_get_video(FrameIndex, OutputVideoInputAviUtlFormat(VideoInputKind));
       StageStopwatch.Stop;
       if PerfLogger <> nil then
         PerfLogger.Add(opsGetVideo, StopwatchElapsedMs(StageStopwatch));
@@ -913,6 +1110,10 @@ begin
         ErrorMessage := 'func_get_video returned nil.';
         Exit;
       end;
+      if (PerfLogger <> nil) and (VideoInputKind = ovikPa64) and
+        ShouldLogAlphaFrame(FrameIndex, oip^.n) then
+        PerfLogger.Trace(Format('alpha_source frame=%d %s',
+          [FrameIndex, Pa64InputAlphaStatsText(FrameData, oip^.w, oip^.h)]));
       if PreviewWindow <> nil then
         PreviewWindow.UpdateFrame(FrameIndex, FrameData);
 
@@ -932,20 +1133,28 @@ begin
       FillChar(DstData, SizeOf(DstData), 0);
       FillChar(DstStride, SizeOf(DstStride), 0);
       SrcData[0] := Pointer(NativeUInt(FrameData) +
-        OutputVideoInputFirstLineOffset(oip^.w, oip^.h));
-      SrcStride[0] := OutputVideoInputSwsStride(oip^.w);
+        OutputVideoInputFirstLineOffset(VideoInputKind, oip^.w, oip^.h));
+      SrcStride[0] := OutputVideoInputSwsStride(VideoInputKind, oip^.w);
       DstData[0] := Frame^.data[0];
       DstData[1] := Frame^.data[1];
       DstData[2] := Frame^.data[2];
+      DstData[3] := Frame^.data[3];
       DstStride[0] := Frame^.linesize[0];
       DstStride[1] := Frame^.linesize[1];
       DstStride[2] := Frame^.linesize[2];
+      DstStride[3] := Frame^.linesize[3];
       StageStopwatch := TStopwatch.StartNew;
       TFFmpegApi.sws_scale(SwsContext, @SrcData[0], @SrcStride[0], 0, oip^.h,
         @DstData[0], @DstStride[0]);
       StageStopwatch.Stop;
       if PerfLogger <> nil then
         PerfLogger.Add(opsVideoConvert, StopwatchElapsedMs(StageStopwatch));
+      if (PerfLogger <> nil) and (VideoInputKind = ovikPa64) and
+        ShouldLogAlphaFrame(FrameIndex, oip^.n) then
+        PerfLogger.Trace(Format('alpha_after_sws frame=%d data3_nil=%s linesize3=%d %s',
+          [FrameIndex, BoolToStr(Frame^.data[3] = nil, True), Frame^.linesize[3],
+           Plane16StatsText('yuva_alpha_plane', Frame^.data[3], oip^.w, oip^.h,
+             Frame^.linesize[3], 1023)]));
 
       Frame^.pts := FrameIndex;
       StageStopwatch := TStopwatch.StartNew;
@@ -1011,7 +1220,8 @@ begin
     end;
 
     if PerfLogger <> nil then
-      PerfLogger.Trace(Format('video_loop_end frame_index=%d encoded_frames=%d aborted=%s end_of_source=%s fatal=%s',
+      PerfLogger.Trace(Format('video_loop_end frame_index=%d encoded_frames=%d ' +
+        'aborted=%s end_of_source=%s fatal=%s',
         [FrameIndex, EncodedFrameCount, BoolToStr(Aborted, True),
          BoolToStr(EndOfSource, True), BoolToStr(FatalAfterHeader, True)]));
 

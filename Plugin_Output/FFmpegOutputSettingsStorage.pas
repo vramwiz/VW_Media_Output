@@ -1,12 +1,18 @@
-unit FFmpegOutputSettingsStorage;
+﻿unit FFmpegOutputSettingsStorage;
+
+// 出力設定をプラグイン横のINIへ保存/復元する。
+// 破損値や旧形式の値は既定値へ丸め、設定読み込み失敗で出力処理を止めない。
 
 interface
 
 uses
   FFmpegOutputConfig;
 
+// INIを読み、壊れた値や未知値は既定値へ丸めてSettingsへ展開する。
 procedure LoadOutputSettingsFromIni(var Settings: TOutputTestSettings);
+// 本質的な選択値だけをINIへ保存し、派生値の不整合を避ける。
 procedure SaveOutputSettingsToIni(const Settings: TOutputTestSettings);
+// プラグインDLLと同じフォルダに置くINIのパスを返す。
 function OutputSettingsIniPath: string;
 
 implementation
@@ -16,9 +22,32 @@ uses
 
 const
   SETTINGS_SECTION = 'Settings'; // INIの設定セクション名
-  SETTINGS_VERSION = 1; // 保存形式の目印。読み込み拒否には使わない。
+  SETTINGS_VERSION = 2;          // 現在の保存形式の目印
 
-// プラグインDLLと同じフォルダにINIを置く。
+// 出力モードをINIへ保存する安定名へ変換する。
+function EncodeModeToName(Mode: TOutputEncodeModeKind): string;
+begin
+  case Mode of
+    oemAlphaProRes:
+      Result := 'AlphaProRes';
+  else
+    Result := 'Normal';
+  end;
+end;
+
+// 未知の出力モード名はDefaultへ丸める。
+function EncodeModeFromName(const Name: string; Default: TOutputEncodeModeKind): TOutputEncodeModeKind;
+begin
+  if SameText(Name, 'AlphaProRes') or SameText(Name, 'Alpha') or
+    SameText(Name, 'ProRes4444') then
+    Result := oemAlphaProRes
+  else if SameText(Name, 'Normal') or SameText(Name, 'MP4') then
+    Result := oemNormal
+  else
+    Result := Default;
+end;
+
+// プラグインDLLと同じフォルダに置くINIのパスを返す。
 function OutputSettingsIniPath: string;
 var
   ModulePath: array[0..MAX_PATH - 1] of Char;
@@ -33,7 +62,7 @@ begin
       'VW_Media_Output.ini';
 end;
 
-// INIへ保存する安定名へ変換する。
+// encoder種別をINIへ保存する安定名へ変換する。
 function EncoderKindToName(Kind: TOutputEncoderKind): string;
 begin
   case Kind of
@@ -50,7 +79,7 @@ begin
   end;
 end;
 
-// 未知の値はDefaultへ丸め、古いINIでも読み込みエラーにしない。
+// 未知のencoder名はDefaultへ丸め、古いINIでも読み込みエラーにしない。
 function EncoderKindFromName(const Name: string; Default: TOutputEncoderKind): TOutputEncoderKind;
 begin
   if SameText(Name, 'CpuX264') or SameText(Name, 'libx264') then
@@ -67,7 +96,7 @@ begin
     Result := Default;
 end;
 
-// INIへ保存する安定名へ変換する。
+// video qualityをINIへ保存する安定名へ変換する。
 function VideoQualityToName(Quality: TOutputVideoQualityKind): string;
 begin
   case Quality of
@@ -82,7 +111,7 @@ begin
   end;
 end;
 
-// 未知の値はDefaultへ丸め、古いINIでも読み込みエラーにしない。
+// 未知のvideo quality名はDefaultへ丸める。
 function VideoQualityFromName(const Name: string; Default: TOutputVideoQualityKind): TOutputVideoQualityKind;
 begin
   if SameText(Name, 'High') or SameText(Name, 'HighQuality') then
@@ -95,7 +124,7 @@ begin
     Result := Default;
 end;
 
-// INIへ保存する安定名へ変換する。
+// audio modeをINIへ保存する安定名へ変換する。
 function AudioModeToName(Mode: TOutputAudioModeKind): string;
 begin
   case Mode of
@@ -116,7 +145,7 @@ begin
   end;
 end;
 
-// 未知の値はDefaultへ丸め、古いINIでも読み込みエラーにしない。
+// 未知のaudio mode名はDefaultへ丸める。
 function AudioModeFromName(const Name: string; Default: TOutputAudioModeKind): TOutputAudioModeKind;
 begin
   if SameText(Name, 'Aac576') or SameText(Name, '576') then
@@ -135,7 +164,7 @@ begin
     Result := Default;
 end;
 
-// 派生済みSettingsから保存すべきVideoQualityだけを推定する。
+// 現在のSettingsからINIへ保存するvideo qualityを推定する。
 function VideoQualityFromSettings(const Settings: TOutputTestSettings): TOutputVideoQualityKind;
 begin
   if Settings.Video.BitRate >= 8000000 then
@@ -146,7 +175,7 @@ begin
     Result := ovqStandard;
 end;
 
-// 派生済みSettingsから保存すべきAudioModeだけを推定する。
+// 現在のSettingsからINIへ保存するaudio modeを推定する。
 function AudioModeFromSettings(const Settings: TOutputTestSettings): TOutputAudioModeKind;
 begin
   if not Settings.Audio.Enabled then
@@ -165,10 +194,11 @@ begin
     Result := oamAac192;
 end;
 
-// INIを読み、壊れた値や未知値はデフォルトへ丸めてSettingsへ展開する。
+// INIを読み、壊れた値や未知値は既定値へ丸めてSettingsへ展開する。
 procedure LoadOutputSettingsFromIni(var Settings: TOutputTestSettings);
 var
   Ini: TIniFile;
+  EncodeMode: TOutputEncodeModeKind;
   EncoderKind: TOutputEncoderKind;
   VideoQuality: TOutputVideoQualityKind;
   AudioMode: TOutputAudioModeKind;
@@ -183,8 +213,12 @@ begin
       EncoderKind := EncoderKindFromName(
         Ini.ReadString(SETTINGS_SECTION, 'Encoder', EncoderKindToName(Settings.Video.EncoderKind)),
         Settings.Video.EncoderKind);
+      EncodeMode := EncodeModeFromName(
+        Ini.ReadString(SETTINGS_SECTION, 'EncodeMode', EncodeModeToName(Settings.EncodeMode)),
+        Settings.EncodeMode);
       VideoQuality := VideoQualityFromName(
-        Ini.ReadString(SETTINGS_SECTION, 'VideoQuality', VideoQualityToName(VideoQualityFromSettings(Settings))),
+        Ini.ReadString(SETTINGS_SECTION, 'VideoQuality',
+          VideoQualityToName(VideoQualityFromSettings(Settings))),
         VideoQualityFromSettings(Settings));
       AudioMode := AudioModeFromName(
         Ini.ReadString(SETTINGS_SECTION, 'AudioMode', AudioModeToName(AudioModeFromSettings(Settings))),
@@ -193,6 +227,7 @@ begin
       ApplyEncoderDefaults(Settings, EncoderKind);
       ApplyVideoQuality(Settings, VideoQuality);
       ApplyAudioMode(Settings, AudioMode);
+      ApplyEncodeMode(Settings, EncodeMode);
     finally
       Ini.Free;
     end;
@@ -211,6 +246,8 @@ begin
     Ini := TIniFile.Create(OutputSettingsIniPath);
     try
       Ini.WriteInteger(SETTINGS_SECTION, 'Version', SETTINGS_VERSION);
+      Ini.WriteString(SETTINGS_SECTION, 'EncodeMode',
+        EncodeModeToName(Settings.EncodeMode));
       Ini.WriteString(SETTINGS_SECTION, 'Encoder',
         EncoderKindToName(Settings.Video.EncoderKind));
       Ini.WriteString(SETTINGS_SECTION, 'VideoQuality',
@@ -221,7 +258,7 @@ begin
       Ini.Free;
     end;
   except
-    // Settings persistence must never prevent output.
+    // 設定保存の失敗で出力処理を止めない。
   end;
 end;
 

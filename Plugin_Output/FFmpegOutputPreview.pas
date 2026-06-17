@@ -1,48 +1,58 @@
-unit FFmpegOutputPreview;
+﻿unit FFmpegOutputPreview;
 
 {$WARN IMPLICIT_STRING_CAST OFF}
 
 interface
 
+// エンコード中の簡易プレビューと暗いフレーム検査ログを管理する。
+// エンコード本体へは診断表示だけを提供し、出力ファイルの内容には影響させない。
+
 uses
-  Winapi.Windows, System.SysUtils;
+  Winapi.Windows, System.SysUtils, FFmpegOutputVideoInput;
 
 type
-  TOutputPreviewSeverity = (opsNormal, opsCaution, opsWarning, opsError);
+  TOutputPreviewSeverity = (
+    opsNormal,  // 問題を検出していない状態
+    opsCaution, // 短時間の暗いフレームを検出した状態
+    opsWarning, // 継続する暗いフレームを検出した状態
+    opsError    // 長時間の暗いフレームを検出した状態
+  );
 
   TOutputPreviewWindow = class
   public
     constructor Create(const SaveFileName, EncodeDescription: string;
-      SourceWidth, SourceHeight, TotalFrames, Rate, Scale: Integer);
+      SourceWidth, SourceHeight, TotalFrames, Rate, Scale: Integer;
+      VideoInputKind: TOutputVideoInputKind);
     destructor Destroy; override;
     procedure UpdateFrame(FrameIndex: Integer; FrameData: Pointer);
     procedure UpdateStatus(const Text: string);
     procedure Close;
   private
-    FSourceWidth: Integer;
-    FSourceHeight: Integer;
-    FTotalFrames: Integer;
-    FRate: Integer;
-    FScale: Integer;
-    FDurationMs: Int64;
-    FSaveFileName: string;
-    FEncodeDescription: string;
-    FLastTick: UInt64;
-    FForm: TObject;
-    FImage: TObject;
-    FStatusLabel: TObject;
-    FBitmap: TObject;
-    FSwsContext: Pointer;
-    FPreviewBuffer: TBytes;
-    FLogWriter: TObject;
-    FLogFileName: string;
-    FCautionCount: Integer;
-    FWarningCount: Integer;
-    FErrorCount: Integer;
-    FDarkStartFrame: Integer;
-    FCurrentSeverity: TOutputPreviewSeverity;
-    FPreviewWidth: Integer;
-    FPreviewHeight: Integer;
+    FSourceWidth       : Integer;                // AviUtl2から受け取る元映像幅
+    FSourceHeight      : Integer;                // AviUtl2から受け取る元映像高さ
+    FTotalFrames       : Integer;                // 出力対象の総フレーム数
+    FRate              : Integer;                // AviUtl2のフレームレート分子
+    FScale             : Integer;                // AviUtl2のフレームレート分母
+    FDurationMs        : Int64;                  // 動画全体の推定時間ms
+    FVideoInputKind    : TOutputVideoInputKind;  // プレビュー変換に使う入力形式
+    FSaveFileName      : string;                 // check logの基準になる出力ファイル名
+    FEncodeDescription : string;                 // check logへ記録するエンコード設定説明
+    FLastTick          : UInt64;                 // 前回プレビュー表示を更新したtick
+    FForm              : TObject;                // 実体のTFormを遅延参照する枠
+    FImage             : TObject;                // 実体のTImageを遅延参照する枠
+    FStatusLabel       : TObject;                // 実体のTLabelを遅延参照する枠
+    FBitmap            : TObject;                // プレビュー表示用TBitmap
+    FSwsContext        : Pointer;                // プレビュー縮小変換用sws context
+    FPreviewBuffer     : TBytes;                 // BGR24へ変換したプレビュー画素buffer
+    FLogWriter         : TObject;                // check logを書き込むTStreamWriter
+    FLogFileName       : string;                 // check logの出力先
+    FCautionCount      : Integer;                // cautionとして記録した区間数
+    FWarningCount      : Integer;                // warningとして記録した区間数
+    FErrorCount        : Integer;                // errorとして記録した区間数
+    FDarkStartFrame    : Integer;                // 暗いフレーム区間の開始フレーム
+    FCurrentSeverity   : TOutputPreviewSeverity; // 現在表示している検査状態
+    FPreviewWidth      : Integer;                // プレビュー表示幅
+    FPreviewHeight     : Integer;                // プレビュー表示高さ
     procedure BuildWindow;
     procedure ConvertFrameToBitmap(FrameData: Pointer);
     procedure OpenLog;
@@ -59,19 +69,19 @@ implementation
 
 uses
   System.Classes, System.Math, System.Types, Winapi.ShellAPI, Vcl.Controls,
-  Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FFmpegApi,
-  FFmpegOutputVideoInput;
+  Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FFmpegApi;
 
 const
-  PREVIEW_MAX_WIDTH = 480;
-  PREVIEW_MAX_HEIGHT = 270;
-  PREVIEW_UPDATE_INTERVAL_MS = 200;
-  FRAME_CHECK_DARK_CORNER_SIZE = 8;
-  FRAME_CHECK_DARK_CORNER_THRESHOLD = 18;
-  DARK_CAUTION_DURATION_MS = 500;
-  DARK_WARNING_DURATION_MS = 1500;
-  DARK_ERROR_DURATION_MS = 3000;
+  PREVIEW_MAX_WIDTH              = 480;  // プレビュー表示の最大幅px
+  PREVIEW_MAX_HEIGHT             = 270;  // プレビュー表示の最大高さpx
+  PREVIEW_UPDATE_INTERVAL_MS     = 200;  // 画面表示更新を間引く最短間隔ms
+  FRAME_CHECK_DARK_CORNER_SIZE   = 8;    // 暗いフレーム判定に使う四隅の検査サイズpx
+  FRAME_CHECK_DARK_CORNER_THRESHOLD = 18; // 暗いフレーム判定で使う平均輝度の上限
+  DARK_CAUTION_DURATION_MS       = 500;  // cautionへ上げる暗い区間の継続時間ms
+  DARK_WARNING_DURATION_MS       = 1500; // warningへ上げる暗い区間の継続時間ms
+  DARK_ERROR_DURATION_MS         = 3000; // errorへ上げる暗い区間の継続時間ms
 
+// ログへ出す動画上の時刻をhh:mm:ss.mmmへ整形する。
 function FormatLogTimeMs(ValueMs: Int64): string;
 var
   Hours: Int64;
@@ -91,6 +101,7 @@ begin
     [Hours, Minutes, Seconds, Milliseconds]);
 end;
 
+// check logへ出す検査状態名を返す。
 function SeverityText(Severity: TOutputPreviewSeverity): string;
 begin
   case Severity of
@@ -105,9 +116,10 @@ begin
   end;
 end;
 
+// 出力情報を保持し、check logとプレビューウィンドウを準備する。
 constructor TOutputPreviewWindow.Create(const SaveFileName,
   EncodeDescription: string; SourceWidth, SourceHeight, TotalFrames, Rate,
-  Scale: Integer);
+  Scale: Integer; VideoInputKind: TOutputVideoInputKind);
 var
   PreviewScale: Double;
 begin
@@ -119,6 +131,7 @@ begin
   FTotalFrames := TotalFrames;
   FRate := Rate;
   FScale := Scale;
+  FVideoInputKind := VideoInputKind;
   FDurationMs := 0;
   if (FTotalFrames > 0) and (FRate > 0) and (FScale > 0) then
     FDurationMs := (Int64(FTotalFrames) * FScale * 1000) div FRate;
@@ -150,12 +163,14 @@ begin
   BuildWindow;
 end;
 
+// プレビュー関連リソースを閉じる。
 destructor TOutputPreviewWindow.Destroy;
 begin
   Close;
   inherited;
 end;
 
+// プレビュー表示用のVCLウィンドウと縮小変換contextを作る。
 procedure TOutputPreviewWindow.BuildWindow;
 var
   Form: TForm;
@@ -212,7 +227,7 @@ begin
   begin
     TFFmpegApi.EnsureLoaded;
     FSwsContext := TFFmpegApi.sws_getContext(FSourceWidth, FSourceHeight,
-      OutputVideoInputFFmpegPixelFormat, FPreviewWidth, FPreviewHeight,
+      OutputVideoInputFFmpegPixelFormat(FVideoInputKind), FPreviewWidth, FPreviewHeight,
       AV_PIX_FMT_BGR24, SWS_BILINEAR, nil, nil, nil);
   end;
 
@@ -225,6 +240,7 @@ begin
   Application.ProcessMessages;
 end;
 
+// ウィンドウ、bitmap、sws context、check logを閉じる。
 procedure TOutputPreviewWindow.Close;
 begin
   if FBitmap <> nil then
@@ -248,6 +264,7 @@ begin
   CloseLog;
 end;
 
+// 出力ファイル名に対応するcheck logを開き、検査条件を書き出す。
 procedure TOutputPreviewWindow.OpenLog;
 begin
   if FSaveFileName = '' then
@@ -283,6 +300,7 @@ begin
   end;
 end;
 
+// 未完了の暗い区間を確定し、問題があればcheck logを開く。
 procedure TOutputPreviewWindow.CloseLog;
 var
   IssueCount: Integer;
@@ -308,6 +326,7 @@ begin
     ShellExecute(0, 'open', PChar(FLogFileName), nil, nil, SW_SHOWNORMAL);
 end;
 
+// 継続中の暗いフレーム区間を指定フレームで終了させてログへ記録する。
 procedure TOutputPreviewWindow.FinishDarkSegment(EndFrameIndex: Integer;
   const Reason: string);
 begin
@@ -318,7 +337,7 @@ begin
   begin
     case FCurrentSeverity of
       opsCaution:
-    Inc(FCautionCount);
+        Inc(FCautionCount);
       opsWarning:
         Inc(FWarningCount);
       opsError:
@@ -336,6 +355,7 @@ begin
   FCurrentSeverity := opsNormal;
 end;
 
+// check logへ1行書き込み、調査中に途中経過が残るよう即時flushする。
 procedure TOutputPreviewWindow.LogLine(const Text: string);
 begin
   if FLogWriter = nil then
@@ -348,6 +368,7 @@ begin
   end;
 end;
 
+// フレーム番号を動画上の時刻msへ変換する。
 function TOutputPreviewWindow.FramePositionMs(FrameIndex: Integer): Int64;
 begin
   if FrameIndex < 0 then
@@ -358,6 +379,7 @@ begin
     Result := 0;
 end;
 
+// AviUtl2から受け取った入力形式をプレビュー用BGR24 bitmapへ変換する。
 procedure TOutputPreviewWindow.ConvertFrameToBitmap(FrameData: Pointer);
 var
   Bitmap: TBitmap;
@@ -383,8 +405,8 @@ begin
   FillChar(DstData, SizeOf(DstData), 0);
   FillChar(DstStrideArray, SizeOf(DstStrideArray), 0);
   SrcData[0] := Pointer(NativeUInt(FrameData) +
-    OutputVideoInputFirstLineOffset(FSourceWidth, FSourceHeight));
-  SrcStrideArray[0] := OutputVideoInputSwsStride(FSourceWidth);
+    OutputVideoInputFirstLineOffset(FVideoInputKind, FSourceWidth, FSourceHeight));
+  SrcStrideArray[0] := OutputVideoInputSwsStride(FVideoInputKind, FSourceWidth);
   DstData[0] := @FPreviewBuffer[0];
   DstStrideArray[0] := FPreviewWidth * 3;
 
@@ -400,6 +422,7 @@ begin
   end;
 end;
 
+// プレビュー四隅の平均輝度から暗いフレームか判定する。
 function TOutputPreviewWindow.PreviewCornersMostlyDark: Boolean;
 
   function CornerIsDark(Left, Top, CornerWidth, CornerHeight: Integer): Boolean;
@@ -443,6 +466,7 @@ begin
       CornerWidth, CornerHeight);
 end;
 
+// 検査状態に応じてステータス表示の文字列と色を更新する。
 procedure TOutputPreviewWindow.SetStatus(Severity: TOutputPreviewSeverity;
   const Text: string);
 var
@@ -465,6 +489,7 @@ begin
   end;
 end;
 
+// 現在フレームの暗さを検査し、状態遷移とcheck logを更新する。
 procedure TOutputPreviewWindow.UpdateFrameCheck(FrameIndex: Integer);
 var
   Dark: Boolean;
@@ -523,6 +548,7 @@ begin
   end;
 end;
 
+// フレームを検査し、必要な間隔でプレビュー表示を更新する。
 procedure TOutputPreviewWindow.UpdateFrame(FrameIndex: Integer; FrameData: Pointer);
 var
   NowTick: UInt64;
@@ -545,6 +571,7 @@ begin
   Application.ProcessMessages;
 end;
 
+// エンコード本体から渡された状態文字列を表示する。
 procedure TOutputPreviewWindow.UpdateStatus(const Text: string);
 begin
   if FStatusLabel <> nil then

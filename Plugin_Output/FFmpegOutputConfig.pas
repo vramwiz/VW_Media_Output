@@ -1,72 +1,101 @@
 ﻿unit FFmpegOutputConfig;
 
+// 出力プラグインのUI/INI/encoderへ渡す設定値を定義し、選択肢を実設定へ展開する。
+// 通常H.264系と透過保持用ProRes 4444系の設定差分もここで管理する。
+
 interface
 
 type
-  TOutputEncoderKind = (oekCpuX264, oekIntelQsv, oekNvidiaNvenc, oekAmdAmf);
-  TOutputPixelFormatKind = (opfYuv420p, opfNv12);
-  TOutputVideoQualityKind = (ovqHigh, ovqStandard, ovqFast);
-  TOutputAudioModeKind = (oamAac576, oamAac384, oamAac256, oamAac192, oamAac128, oamNone);
+  TOutputEncodeModeKind = (oemNormal, oemAlphaProRes); // 通常出力と透過保持専用出力の種別
+  TOutputEncoderKind = (oekCpuX264, oekIntelQsv, oekNvidiaNvenc, oekAmdAmf); // 通常出力で選べるencoder種別
+  TOutputPixelFormatKind = (opfYuv420p, opfNv12, opfYuva444p10le); // FFmpeg encoderへ渡すpixel format種別
+  TOutputVideoQualityKind = (ovqHigh, ovqStandard, ovqFast); // UIで選ぶ映像品質preset
+  TOutputAudioModeKind = (oamAac576, oamAac384, oamAac256, oamAac192, oamAac128, oamNone); // UIで選ぶ音声出力preset
 
   TOutputEncoderInfo = record
-    Kind: TOutputEncoderKind; // UI/INIで扱うencoder種別
-    DisplayName: string; // UI表示名
-    EncoderName: AnsiString; // FFmpeg encoder名
-    PixelFormat: TOutputPixelFormatKind; // encoder入力pixel format種別
-    PixelFormatName: string; // log/UI表示用pixel format名
-    IsGpu: Boolean; // GPU encoderかどうか
-    DefaultBitRate: Int64; // encoder既定bitrate
-    DefaultPreset: AnsiString; // encoder既定preset
-    DefaultQuality: Integer; // x264/qsvへ渡す品質目安
+    Kind            : TOutputEncoderKind;      // UI/INIで扱うencoder種別
+    DisplayName     : string;                  // UI表示名
+    EncoderName     : AnsiString;              // FFmpeg encoder名
+    PixelFormat     : TOutputPixelFormatKind;  // encoder入力pixel format種別
+    PixelFormatName : string;                  // log/UI表示用pixel format名
+    IsGpu           : Boolean;                 // GPU encoderかどうか
+    DefaultBitRate  : Int64;                   // encoder既定bitrate
+    DefaultPreset   : AnsiString;              // encoder既定preset
+    DefaultQuality  : Integer;                 // x264/qsvへ渡す品質目安
   end;
 
   TOutputVideoSettings = record
-    EncoderKind: TOutputEncoderKind; // 選択されたencoder種別
-    CodecName: string; // UI/log表示用codec名
-    EncoderName: AnsiString; // FFmpeg encoder名
-    PixelFormat: TOutputPixelFormatKind; // encoderへ渡すpixel format種別
-    PixelFormatName: string; // UI/log表示用pixel format名
-    BitRate: Int64; // video bitrate
-    Preset: AnsiString; // encoder preset
-    Quality: Integer; // crf/global_quality相当の目安
+    EncoderKind     : TOutputEncoderKind;     // 選択されたencoder種別
+    CodecName       : string;                 // UI/log表示用codec名
+    EncoderName     : AnsiString;             // FFmpeg encoder名
+    PixelFormat     : TOutputPixelFormatKind; // encoderへ渡すpixel format種別
+    PixelFormatName : string;                 // UI/log表示用pixel format名
+    BitRate         : Int64;                  // video bitrate
+    Preset          : AnsiString;             // encoder preset
+    Quality         : Integer;                // crf/global_quality相当の目安
   end;
 
   TOutputAudioSettings = record
-    Enabled: Boolean; // audioを出力するか
-    CodecName: string; // UI/log表示用codec名
-    EncoderName: AnsiString; // FFmpeg encoder名
-    BitRate: Int64; // audio bitrate
-    SampleRate: Integer; // 出力sample rate
-    Channels: Integer; // 出力channel数
+    Enabled     : Boolean;    // audioを出力するか
+    CodecName   : string;     // UI/log表示用codec名
+    EncoderName : AnsiString; // FFmpeg encoder名
+    BitRate     : Int64;      // audio bitrate
+    SampleRate  : Integer;    // 出力sample rate
+    Channels    : Integer;    // 出力channel数
   end;
 
   TOutputTestSettings = record
-    SaveFileName: string; // AviUtl2から渡された保存先
-    PresetName: string; // 将来用のpreset名
-    Container: string; // container表示名
-    Video: TOutputVideoSettings; // video encoder設定
-    Audio: TOutputAudioSettings; // audio encoder設定
+    SaveFileName : string;                // AviUtl2から渡された保存先
+    PresetName   : string;                // 将来用のpreset名
+    EncodeMode   : TOutputEncodeModeKind; // 通常出力か透過保持専用出力か
+    Container    : string;                // container表示名
+    Video        : TOutputVideoSettings;  // video encoder設定
+    Audio        : TOutputAudioSettings;  // audio encoder設定
   end;
 
 const
-  OUTPUT_ENCODER_COUNT = 4;
-  OUTPUT_VIDEO_QUALITY_COUNT = 3;
-  OUTPUT_AUDIO_MODE_COUNT = 6;
+  OUTPUT_ENCODE_MODE_COUNT   = 2; // UIの出力モード一覧に出す項目数
+  OUTPUT_ENCODER_COUNT       = 4; // UIの通常encoder一覧に出す項目数
+  OUTPUT_VIDEO_QUALITY_COUNT = 3; // UIの映像品質一覧に出す項目数
+  OUTPUT_AUDIO_MODE_COUNT    = 6; // UIの音声mode一覧に出す項目数
 
+// UIへ表示する出力モード名を返す。
+function OutputEncodeModeName(Mode: TOutputEncodeModeKind): string;
+// 出力モードenumをUI indexへ変換する。
+function OutputEncodeModeIndex(Mode: TOutputEncodeModeKind): Integer;
+// UI indexを出力モードenumへ変換する。
+function OutputEncodeModeByIndex(Index: Integer): TOutputEncodeModeKind;
+// UIのencoder一覧に出す固定情報を返す。
 function OutputEncoderInfo(Index: Integer): TOutputEncoderInfo;
+// encoder種別から固定情報を返す。
 function OutputEncoderInfoByKind(Kind: TOutputEncoderKind): TOutputEncoderInfo;
+// encoder種別からUI一覧のindexを返す。
 function OutputEncoderIndexByKind(Kind: TOutputEncoderKind): Integer;
+// UIへ表示するvideo quality名を返す。
 function OutputVideoQualityName(Quality: TOutputVideoQualityKind): string;
+// video quality enumをUI indexへ変換する。
 function OutputVideoQualityIndex(Quality: TOutputVideoQualityKind): Integer;
+// UI indexをvideo quality enumへ変換する。
 function OutputVideoQualityByIndex(Index: Integer): TOutputVideoQualityKind;
+// UIへ表示するaudio mode名を返す。
 function OutputAudioModeName(Mode: TOutputAudioModeKind): string;
+// audio mode enumをUI indexへ変換する。
 function OutputAudioModeIndex(Mode: TOutputAudioModeKind): Integer;
+// UI indexをaudio mode enumへ変換する。
 function OutputAudioModeByIndex(Index: Integer): TOutputAudioModeKind;
+// FFmpegへ渡すpixel format値へ変換する。
 function OutputPixelFormatFFmpegValue(Format: TOutputPixelFormatKind): Integer;
+// UI/logへ出すpixel format説明を返す。
 function OutputPixelFormatDescription(Format: TOutputPixelFormatKind): string;
+// encoder種別の既定値をSettingsへ展開する。
 procedure ApplyEncoderDefaults(var Settings: TOutputTestSettings; Kind: TOutputEncoderKind);
+// quality選択をbitrate/preset/qualityへ展開する。
 procedure ApplyVideoQuality(var Settings: TOutputTestSettings; Quality: TOutputVideoQualityKind);
+// audio選択をAAC設定または無効設定へ展開する。
 procedure ApplyAudioMode(var Settings: TOutputTestSettings; Mode: TOutputAudioModeKind);
+// 出力モードをSettingsへ展開する。
+procedure ApplyEncodeMode(var Settings: TOutputTestSettings; Mode: TOutputEncodeModeKind);
+// プラグインの既定設定を作る。
 procedure InitDefaultOutputSettings(var Settings: TOutputTestSettings);
 
 implementation
@@ -75,7 +104,34 @@ uses
   System.SysUtils, FFmpegApi;
 
 const
-  AV_PIX_FMT_NV12 = 23;
+  AV_PIX_FMT_NV12 = 23; // 現在のFFmpegヘッダーで参照するNV12のpixel format値
+
+function OutputEncodeModeName(Mode: TOutputEncodeModeKind): string;
+begin
+  case Mode of
+    oemNormal:
+      Result := 'Normal MP4';
+    oemAlphaProRes:
+      Result := 'Alpha MOV / ProRes 4444';
+  else
+    Result := 'Normal MP4';
+  end;
+end;
+
+function OutputEncodeModeIndex(Mode: TOutputEncodeModeKind): Integer;
+begin
+  Result := Ord(Mode);
+end;
+
+function OutputEncodeModeByIndex(Index: Integer): TOutputEncodeModeKind;
+begin
+  case Index of
+    1:
+      Result := oemAlphaProRes;
+  else
+    Result := oemNormal;
+  end;
+end;
 
 // UIのencoder一覧に出す固定情報を返す。
 function OutputEncoderInfo(Index: Integer): TOutputEncoderInfo;
@@ -256,6 +312,11 @@ begin
       Result := AV_PIX_FMT_YUV420P;
     opfNv12:
       Result := AV_PIX_FMT_NV12;
+    opfYuva444p10le:
+      begin
+        TFFmpegApi.EnsureLoaded;
+        Result := TFFmpegApi.av_get_pix_fmt(PAnsiChar(AnsiString('yuva444p10le')));
+      end;
   else
     Result := AV_PIX_FMT_YUV420P;
   end;
@@ -269,6 +330,8 @@ begin
       Result := 'source input -> yuv420p';
     opfNv12:
       Result := 'source input -> nv12';
+    opfYuva444p10le:
+      Result := 'PA64 alpha input -> yuva444p10le';
   else
     Result := 'source input';
   end;
@@ -394,11 +457,34 @@ begin
   end;
 end;
 
+// 出力モードをSettingsへ展開する。透過保持モードは通常H.264経路とは別の専用設定にする。
+procedure ApplyEncodeMode(var Settings: TOutputTestSettings; Mode: TOutputEncodeModeKind);
+begin
+  Settings.EncodeMode := Mode;
+  case Mode of
+    oemAlphaProRes:
+      begin
+        Settings.Container := 'MOV';
+        Settings.Video.CodecName := 'ProRes 4444 (alpha)';
+        Settings.Video.EncoderName := 'prores_ks';
+        Settings.Video.PixelFormat := opfYuva444p10le;
+        Settings.Video.PixelFormatName := 'yuva444p10le';
+        Settings.Video.BitRate := 0;
+        Settings.Video.Preset := '';
+        Settings.Video.Quality := 0;
+      end;
+  else
+    if Settings.Container = '' then
+      Settings.Container := 'MP4';
+  end;
+end;
+
 // プラグインの既定設定を作る。INI読み込み前の基準値。
 procedure InitDefaultOutputSettings(var Settings: TOutputTestSettings);
 begin
   Settings.SaveFileName := '';
   Settings.PresetName := '';
+  Settings.EncodeMode := oemNormal;
   Settings.Container := '';
   Settings.Video.CodecName := '';
   Settings.Video.EncoderName := '';
@@ -415,6 +501,7 @@ begin
   ApplyEncoderDefaults(Settings, oekIntelQsv);
   ApplyVideoQuality(Settings, ovqStandard);
   ApplyAudioMode(Settings, oamAac192);
+  ApplyEncodeMode(Settings, oemNormal);
 end;
 
 end.

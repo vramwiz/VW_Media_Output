@@ -1,5 +1,8 @@
 ﻿unit FFmpegOutputPerfLog;
 
+// エンコード中の処理時間をstage別に記録し、調査用のperf logへ即時flushする。
+// Debug時だけ有効にし、通常のRelease出力ではログ生成の負荷を避ける。
+
 interface
 
 uses
@@ -7,38 +10,38 @@ uses
 
 const
   {$IFDEF DEBUG}
-  OUTPUT_PERF_LOG_ENABLED = True; // perf logを出すかどうか
+  OUTPUT_PERF_LOG_ENABLED        = True;  // Debugビルドでperf logを出すか
   {$ELSE}
-  OUTPUT_PERF_LOG_ENABLED = False; // Releaseではperf logを出さない
+  OUTPUT_PERF_LOG_ENABLED        = False; // Releaseビルドでperf logを出さない
   {$ENDIF}
-  OUTPUT_PERF_LOG_EVERY_N_FRAMES = 30; // 途中経過を出す間隔
+  OUTPUT_PERF_LOG_EVERY_N_FRAMES = 30; // 途中経過を出すフレーム間隔
 
 type
   TOutputPerfStage = (
-    opsGetVideo,
-    opsFrameWritable,
-    opsVideoConvert,
-    opsVideoEncodeWrite,
-    opsGetAudio,
-    opsAudioWritable,
-    opsAudioConvert,
-    opsAudioEncodeWrite
+    opsGetVideo,          // AviUtl2から映像フレームを取得するstage
+    opsFrameWritable,     // FFmpeg映像frameを書き込み可能にするstage
+    opsVideoConvert,      // 入力映像をencoder用pixel formatへ変換するstage
+    opsVideoEncodeWrite,  // 映像frameをencodeしpacketをmuxerへ書くstage
+    opsGetAudio,          // AviUtl2からPCM音声を取得するstage
+    opsAudioWritable,     // FFmpeg音声frameを書き込み可能にするstage
+    opsAudioConvert,      // PCM音声をAAC encoder用sample formatへ変換するstage
+    opsAudioEncodeWrite   // 音声frameをencodeしpacketをmuxerへ書くstage
   );
 
   TOutputPerfStageStats = record
-    Count: Int64; // 計測回数
-    TotalMs: Double; // 合計ms
-    MaxMs: Double; // 最大ms
+    Count   : Int64;  // 計測回数
+    TotalMs : Double; // 合計ms
+    MaxMs   : Double; // 最大ms
     procedure Add(ElapsedMs: Double);
     function AverageMs: Double;
   end;
 
   TOutputPerfLogger = class
   private
-    FFile: TextFile; // 出力中のlog file
-    FOpened: Boolean; // log fileを開けたかどうか
-    FStats: array[TOutputPerfStage] of TOutputPerfStageStats; // stage別統計
-    FLastFrameLog: Integer; // 最後に途中経過を出したframe
+    FFile         : TextFile;                                         // 出力中のlog file
+    FOpened       : Boolean;                                          // log fileを開けたかどうか
+    FStats        : array[TOutputPerfStage] of TOutputPerfStageStats; // stage別統計
+    FLastFrameLog : Integer;                                          // 最後に途中経過を出したframe
     procedure WriteLine(const Text: string);
     procedure WriteStageSummary(Stage: TOutputPerfStage; TotalMs: Double);
     procedure WriteBottleneckSummary(TotalMs: Double);

@@ -38,9 +38,13 @@ begin
     AudioText := Format('AAC %d kbps', [CurrentSettings.Audio.BitRate div 1000])
   else
     AudioText := 'Audio none';
-  LastConfigText := Format('%s / %s / %s / %s',
-    [CurrentSettings.Container, CurrentSettings.Video.CodecName,
-     CurrentSettings.Video.PixelFormatName, AudioText]);
+  if CurrentSettings.EncodeMode = oemAlphaProRes then
+    LastConfigText := Format('%s / %s / alpha / %s',
+      [CurrentSettings.Container, CurrentSettings.Video.CodecName, AudioText])
+  else
+    LastConfigText := Format('%s / %s / %s / %s',
+      [CurrentSettings.Container, CurrentSettings.Video.CodecName,
+       CurrentSettings.Video.PixelFormatName, AudioText]);
 end;
 
 //------------------------------------------------------------------------------
