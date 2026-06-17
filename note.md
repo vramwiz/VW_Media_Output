@@ -1559,6 +1559,28 @@ AudioMode=Aac192
 - AviUtl2 が `VW_Media_Output.auo2` を使用中の場合は、通常ビルドの post-build copy だけ失敗する。
 - 実配置は AviUtl2 を閉じて通常ビルドする。
 
+## 2026-06-17 プレビュー下部トグルのDPIはみ出し対策
+
+状況:
+
+- プレビュー下部の `確認ポイントがある場合、出力後にログを表示` テキストが、DPIや実フォント寸法によっては下部パネルからはみ出すことがあった。
+- 原因は `PanelHeight = 48`、ラベル高さ `18`、チェックボックス幅/高さ `18` など、96 DPI前提の固定値が残っていたため。
+
+変更内容:
+
+- `Plugin_Output\FFmpegOutputPreview.pas`
+  - 下部パネル高さを、実際の `TextHeight`、チェックボックス寸法、余白から計算するよう変更。
+  - チェックボックス寸法を `GetSystemMetrics(SM_CXMENUCHECK)` とテキスト高さから決めるよう変更。
+  - フォーム最小幅を、チェックボックス、ラベル文字幅、余白込みで計算するよう変更。
+  - チェック説明ラベルをチェックボックスの高さ中央に合わせるよう調整。
+
+確認:
+
+- post-build を抑止した Win64 Debug compile 成功。
+- post-build を抑止した Win64 Release compile 成功。
+- エラー 0。
+- 既存の `FFmpegOutputEncoder.pas` に `W1057 文字列の暗黙のキャスト` 警告が 5 件出るが、今回変更箇所由来ではない。
+
 ## コメント記述ルール
 
 基本方針:

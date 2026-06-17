@@ -1,4 +1,4 @@
-library VW_Media_Output;
+﻿library VW_Media_Output;
 
 uses
   Winapi.Windows,

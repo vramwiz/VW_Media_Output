@@ -1,4 +1,4 @@
-unit FFmpegOutputPreview;
+﻿unit FFmpegOutputPreview;
 
 {$WARN IMPLICIT_STRING_CAST OFF}
 
@@ -194,11 +194,14 @@ var
   Bitmap: TBitmap;
   CheckCaption: string;
   ContentWidth: Integer;
+  CheckSize: Integer;
+  Gap: Integer;
   Margin: Integer;
   PanelHeight: Integer;
+  TextHeight: Integer;
 begin
   Margin := 10;
-  PanelHeight := 48;
+  Gap := 6;
   CheckCaption := '確認ポイントがある場合、出力後にログを表示';
 
   Form := TForm.Create(nil);
@@ -212,10 +215,14 @@ begin
   Form.Color := clBlack;
   Form.DoubleBuffered := True;
   Form.Canvas.Font.Assign(Form.Font);
-  ContentWidth := Max(FPreviewWidth, Form.Canvas.TextWidth(CheckCaption) + 24);
-  Form.ClientWidth := ContentWidth + Margin * 2;
+  TextHeight := Form.Canvas.TextHeight('Mg');
+  CheckSize := Max(GetSystemMetrics(SM_CXMENUCHECK), TextHeight) + 4;
+  PanelHeight := Margin * 2 + TextHeight * 2 + Gap;
+  ContentWidth := Max(FPreviewWidth, Margin * 2 + CheckSize + Gap +
+    Form.Canvas.TextWidth(CheckCaption));
+  Form.ClientWidth := ContentWidth;
   Form.ClientHeight := FPreviewHeight + PanelHeight;
-  Form.Constraints.MinWidth := ContentWidth + Margin * 2;
+  Form.Constraints.MinWidth := Form.Width;
   Form.Constraints.MinHeight := PanelHeight + 120;
 
   PreviewPanel := TPanel.Create(Form);
@@ -244,8 +251,8 @@ begin
   StatusLabel := TLabel.Create(Form);
   StatusLabel.Parent := ControlPanel;
   StatusLabel.Left := Margin;
-  StatusLabel.Top := 6;
-  StatusLabel.Height := 18;
+  StatusLabel.Top := Margin;
+  StatusLabel.Height := TextHeight + 2;
   StatusLabel.AutoSize := False;
   StatusLabel.Transparent := False;
   StatusLabel.Color := ControlPanel.Color;
@@ -255,9 +262,9 @@ begin
   CheckLogOption := TCheckBox.Create(Form);
   CheckLogOption.Parent := ControlPanel;
   CheckLogOption.Left := Margin;
-  CheckLogOption.Top := StatusLabel.Top + StatusLabel.Height + 4;
-  CheckLogOption.Width := 18;
-  CheckLogOption.Height := 18;
+  CheckLogOption.Top := StatusLabel.Top + StatusLabel.Height + Gap;
+  CheckLogOption.Width := CheckSize;
+  CheckLogOption.Height := CheckSize;
   CheckLogOption.Caption := '';
   CheckLogOption.Checked := FShowCheckLogAfterEncode;
   CheckLogOption.Color := ControlPanel.Color;
@@ -266,9 +273,9 @@ begin
 
   CheckLogLabel := TLabel.Create(Form);
   CheckLogLabel.Parent := ControlPanel;
-  CheckLogLabel.Left := CheckLogOption.Left + CheckLogOption.Width + 4;
-  CheckLogLabel.Top := CheckLogOption.Top + 1;
-  CheckLogLabel.Height := 18;
+  CheckLogLabel.Left := CheckLogOption.Left + CheckLogOption.Width + Gap;
+  CheckLogLabel.Top := CheckLogOption.Top + (CheckLogOption.Height - TextHeight) div 2;
+  CheckLogLabel.Height := TextHeight + 2;
   CheckLogLabel.AutoSize := False;
   CheckLogLabel.Transparent := False;
   CheckLogLabel.Color := ControlPanel.Color;
