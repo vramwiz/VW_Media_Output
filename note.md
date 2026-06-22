@@ -1667,3 +1667,112 @@ function PrepareFrameBuffer(Decoder: TFFmpegDecoder; out Buffer: Pointer;
 
 - コメントと対象の宣言/実装の間には空行を入れない。
 - コメントブロック内でも、意味の切れ目が明確に必要な場合以外は空行を入れない。
+
+## 2026-06-22 回転出力テスト用フラグ
+
+- VideoMiner 側で縦長ショート動画の回転メタデータ対応を入れたため、VW_Media_Output 側でも比較用に「実フレームを回転して出力する」設定を追加した。
+- 追加設定:
+  - `TOutputTestSettings.RotateOutput90Degrees`
+  - INI key: `[Settings] RotateOutput90Degrees`
+  - 設定ダイアログ: `Rotate output 90 degrees (normal MP4 test)`
+  - 保存ダイアログ下部の概要: 通常 MP4 で有効時に `rotate90` を表示
+- エンコード実装:
+  - 通常 MP4 (`oemNormal`) のみ有効。
+  - 入力フレームを `YUY2 -> BGR24 -> 90度時計回り回転 -> encoder pixel format` の順で変換する。
+  - 出力動画の幅と高さは入れ替える。
+  - Alpha ProRes は透過保持経路を壊さないため、フラグが立っていても実回転は適用しない。
+- このフラグは display matrix / rotate metadata を付与するものではなく、エンコードされる画素データそのものを回転する比較用機能。
+  - Media Player と VideoMiner の差が出るかを見る場合は、まずこの実フレーム回転版で同じ見え方になるか確認する。
+  - 実フレーム回転版で一致し、回転メタデータ付き素材で差が出るなら、差分はプレイヤー側の回転メタデータ解釈に寄っている可能性が高い。
+- 追加修正:
+  - エンコードプレビューは `func_get_video` から返る元サイズのフレームを表示するため、回転 ON 時に出力後サイズを `TOutputPreviewWindow` へ渡すと stride/高さ解釈がズレて画素の並びが壊れる。
+  - プレビューには元サイズを渡し、プレビュー内部で `source -> 縮小BGR24 -> 90度時計回り回転 -> 表示用bitmap` の順に変換するよう修正した。
+- 完成扱い:
+  - ユーザー確認で、設定・出力結果・エンコードプレビューの見え方が正しいことを確認済み。
+  - この回転出力フラグは、縦長ショート動画の VideoMiner / Media Player 比較用機能として完成扱いにする。
+  - 最終ビルド確認: Win64 Debug / Release ともに成功。post-build で `VW_Media_Output.auo2` まで配置済み。
+## 2026-06-22 回転出力を実回転から metadata 回転へ変更
+
+- ユーザー確認で、前回の `RotateOutput90Degrees` 出力は `ffprobe` 上 `width=1080` / `height=1920` かつ rotate tag / display matrix 無しだった。
+- これは実装どおり、画素データ自体を90度回転して出力していたため。
+- 今回、同じ設定を「画素データを回転しないで、MP4 の display matrix / rotate metadata だけを付与する」方式へ変更した。
+- 変更内容:
+  - `FFmpegApi.pas`
+    - `av_stream_add_side_data`
+    - `av_mallocz`
+    - `av_free`
+    - `av_display_rotation_set`
+    - `AV_PKT_DATA_DISPLAYMATRIX`
+    を追加。
+  - `FFmpegOutputEncoder.pas`
+    - `AddVideoDisplayRotation` を追加し、video stream に display matrix side data を付与する。
+    - `RotateOutput90Degrees=True` かつ Normal MP4 の場合、`avformat_write_header` 前に `AV_PKT_DATA_DISPLAYMATRIX` を追加する。
+    - FFmpeg の display rotation は反時計回り角度なので、従来の「時計回り90度」に合わせて `-90` を設定する。
+    - 出力幅/高さの入れ替えを廃止した。
+    - `YUY2 -> BGR24 -> 90度実回転 -> encoder pixel format` の二段変換を廃止し、通常の入力形式 -> encoder pixel format 変換に戻した。
+  - `VW_Media_Output.dpr`
+    - 保存ダイアログ概要表示を `rotate-meta90` に変更。
+  - `FFmpegOutputSettingsDialog.pas`
+    - 設定表示を `Write 90 degree rotation metadata (normal MP4 test)` に変更。
+  - `README.md`
+    - 回転出力テストの説明を、実フレーム回転ではなく display matrix / rotate metadata 付与として更新。
+- 注意:
+  - エンコードされる画素データと出力動画の幅/高さは入れ替えない。
+  - エンコードプレビューは従来どおり metadata 適用後の見え方に合わせて90度回転表示する。
+  - Alpha MOV / ProRes 4444 には適用しない。
+- ビルド確認:
+  - Win64 Debug: 成功、警告 0 / エラー 0。
+  - Win64 Release: 成功、警告 0 / エラー 0。
+
+## 2026-06-22 display matrix 付与APIの修正
+
+- 出力時に `Exception: FFmpeg function not found: av_stream_add_side_data` が出た。
+- 原因:
+  - 同梱している FFmpeg 8.1.1 / `avformat-62.dll` には `av_stream_add_side_data` が export されていなかった。
+  - 代わりに `avcodec-62.dll` の `av_packet_side_data_new` が利用できる。
+- 修正:
+  - `av_stream_add_side_data` の宣言・ロードを削除。
+  - `AVPacketSideData` 宣言と `av_packet_side_data_new` を追加。
+  - `Stream^.codecpar^.coded_side_data` / `nb_coded_side_data` に `AV_PKT_DATA_DISPLAYMATRIX` を追加し、その data に `av_display_rotation_set` で `-90` を書く方式へ変更。
+  - 追加DLLは不要。同梱済みの `avcodec-62.dll` / `avutil-60.dll` だけで動作する。
+- ビルド確認:
+  - Win64 Debug: 成功、警告 0 / エラー 0。
+  - Win64 Release: 成功、警告 0 / エラー 0。
+  - post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へ配置済み。
+
+## 2026-06-22 metadata 回転出力の実ファイル確認
+
+- 対象:
+  - `C:\Users\vramw\Videos\test_out_r2.mp4`
+- `ffprobe` 結果:
+  - `width=1920`
+  - `height=1080`
+  - `coded_width=1920`
+  - `coded_height=1080`
+  - `side_data_type=Display Matrix`
+  - `rotation=90`
+- 結論:
+  - 画素データのフレームサイズは `1920x1080` のまま。
+  - MP4 stream に Display Matrix の回転 metadata が付与されている。
+  - 今回の `RotateOutput90Degrees` は、意図どおり実回転ではなく metadata 回転として出力できている。
+
+## 2026-06-22 回転 metadata 角度を 90 度ごとの選択式へ拡張
+- 背景:
+  - これまでは通常 MP4 の回転 metadata 出力が ON/OFF の2択で、ON は90度時計回り固定だった。
+  - デバッグ用設定だが、今後も比較素材作成に使う可能性があるため、90度ごとの角度選択に拡張した。
+- 変更:
+  - `TOutputTestSettings.RotateOutputDegrees` を追加し、`0 / 90 / 180 / 270` を保持するよう変更。
+  - 設定ダイアログのチェックボックスを `Rotation metadata` コンボボックスへ変更。
+    - `None`
+    - `90 deg clockwise`
+    - `180 deg`
+    - `270 deg clockwise`
+  - INI は新キー `[Settings] RotateOutputDegrees` を保存する。
+  - 旧キー `RotateOutput90Degrees=True` が残っている場合は互換として90度に変換して読む。
+  - 通常 MP4 のみ、`av_display_rotation_set` へ `-RotateOutputDegrees` を渡して display matrix を付与する。
+  - エンコードプレビューも metadata 適用後の見え方に合わせ、90/180/270度の表示回転に対応した。
+  - AviUtl2 保存ダイアログ下部の概要表示も `rotate-meta90` / `rotate-meta180` / `rotate-meta270` を表示する。
+- 確認:
+  - Win64 Debug: 成功、警告 0 / エラー 0。
+  - Win64 Release: 成功、警告 0 / エラー 0。
+  - PostBuild により `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー済み。

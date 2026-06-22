@@ -11,6 +11,15 @@ uses
 type
   TAVMediaType = Integer;
 
+  PAVPacketSideData = ^TAVPacketSideData;
+  PPAVPacketSideData = ^PAVPacketSideData;
+  // FFmpegのpacket/stream side data。
+  TAVPacketSideData = record
+    data      : PByte;      // side data本体
+    size      : NativeUInt; // side dataサイズ
+    data_type : Integer;    // AVPacketSideDataType
+  end;
+
   // FFmpegの分数値を表す型。
   TAVRational = record
     num : Integer; // 分子
@@ -34,7 +43,7 @@ type
     codec_tag              : Cardinal;         // コンテナ側のコーデックタグ
     extradata              : PByte;            // デコーダ初期化用の追加データ
     extradata_size         : Integer;          // 追加データのバイト数
-    coded_side_data        : Pointer;          // FFmpeg側のサイドデータ
+    coded_side_data        : PAVPacketSideData; // FFmpeg側のサイドデータ
     nb_coded_side_data     : Integer;          // サイドデータ数
     format                 : Integer;          // ピクセル形式またはサンプル形式
     bit_rate               : Int64;            // ビットレート
@@ -201,6 +210,8 @@ type
   Tav_packet_unref               = procedure(packet: PAVPacket); cdecl;
   Tav_packet_rescale_ts          = procedure(packet: PAVPacket;
     tb_src, tb_dst: TAVRational); cdecl;
+  Tav_packet_side_data_new       = function(psd: PPAVPacketSideData; pnb_sd: PInteger;
+    side_data_type: Integer; size: NativeUInt; flags: Integer): PAVPacketSideData; cdecl;
 
   Tav_frame_alloc                = function: PAVFrame; cdecl;
   Tav_frame_free                 = procedure(frame: PPAVFrame); cdecl;
@@ -209,6 +220,7 @@ type
   Tav_frame_make_writable        = function(frame: PAVFrame): Integer; cdecl;
   Tav_strerror                   = function(errnum: Integer; errbuf: PAnsiChar;
     errbuf_size: NativeUInt): Integer; cdecl;
+  Tav_display_rotation_set       = procedure(matrix: PInteger; angle: Double); cdecl;
   Tav_get_sample_fmt_name        = function(sample_fmt: Integer): PAnsiChar; cdecl;
   Tav_get_pix_fmt                = function(name: PAnsiChar): Integer; cdecl;
   Tav_opt_set                    = function(obj: Pointer; name, val: PAnsiChar;
@@ -248,6 +260,7 @@ const
   SWS_BILINEAR                = 2;                    // sws_scaleのbilinear変換flag
   AVIO_FLAG_WRITE             = 2;                    // avio_openで出力書き込みを指定するflag
   AV_CODEC_FLAG_GLOBAL_HEADER = 1 shl 22;             // codec headerをstream extradataへ出すflag
+  AV_PKT_DATA_DISPLAYMATRIX   = 5;                    // 回転/反転などの表示行列side data
   AVERROR_EOF                 = -541478725;           // FFmpegのEOFエラー値
   AVERROR_EAGAIN              = -11;                  // FFmpegの再試行要求エラー値
   AV_NOPTS_VALUE              = -9223372036854775808; // PTS未設定を表すFFmpeg値
@@ -283,9 +296,11 @@ type
     class var av_packet_alloc                 : Tav_packet_alloc;              // AVPacketを確保する関数
     class var av_packet_free                  : Tav_packet_free;               // AVPacketを解放する関数
     class var av_packet_unref                 : Tav_packet_unref;              // AVPacketの参照を解放する関数
+    class var av_packet_side_data_new         : Tav_packet_side_data_new;      // side data配列へ新規要素を追加する関数
     class var av_frame_alloc                  : Tav_frame_alloc;               // AVFrameを確保する関数
     class var av_frame_free                   : Tav_frame_free;                // AVFrameを解放する関数
     class var av_strerror                     : Tav_strerror;                  // FFmpegエラーコードを文字列化する関数
+    class var av_display_rotation_set         : Tav_display_rotation_set;      // display matrixへ回転角を書き込む関数
     class var av_get_sample_fmt_name          : Tav_get_sample_fmt_name;       // サンプル形式名を取得する関数
     class var av_get_pix_fmt                  : Tav_get_pix_fmt;               // pixel format名から番号を取得する関数
     class var av_channel_layout_default       : Tav_channel_layout_default;    // 標準チャンネルレイアウトを作る関数
@@ -378,6 +393,7 @@ begin
   FAvFormat := LoadDll(DllPath, 'avformat-62.dll');
 
   av_strerror := Tav_strerror(LoadProc(FAvUtil, 'av_strerror'));
+  av_display_rotation_set := Tav_display_rotation_set(LoadProc(FAvUtil, 'av_display_rotation_set'));
   av_get_sample_fmt_name := Tav_get_sample_fmt_name(LoadProc(FAvUtil, 'av_get_sample_fmt_name'));
   av_get_pix_fmt := Tav_get_pix_fmt(LoadProc(FAvUtil, 'av_get_pix_fmt'));
   av_frame_alloc := Tav_frame_alloc(LoadProc(FAvUtil, 'av_frame_alloc'));
@@ -406,6 +422,7 @@ begin
   av_packet_alloc := Tav_packet_alloc(LoadProc(FAvCodec, 'av_packet_alloc'));
   av_packet_free := Tav_packet_free(LoadProc(FAvCodec, 'av_packet_free'));
   av_packet_unref := Tav_packet_unref(LoadProc(FAvCodec, 'av_packet_unref'));
+  av_packet_side_data_new := Tav_packet_side_data_new(LoadProc(FAvCodec, 'av_packet_side_data_new'));
 
   sws_getContext := Tsws_getContext(LoadProc(FSwScale, 'sws_getContext'));
   sws_scale := Tsws_scale(LoadProc(FSwScale, 'sws_scale'));

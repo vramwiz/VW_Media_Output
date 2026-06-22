@@ -24,7 +24,7 @@ uses
 
 const
   SETTINGS_SECTION = 'Settings'; // INIの設定セクション名
-  SETTINGS_VERSION = 2;          // 現在の保存形式の目印
+  SETTINGS_VERSION = 3;          // 現在の保存形式の目印
 
 // 出力モードをINIへ保存する安定名へ変換する。
 function EncodeModeToName(Mode: TOutputEncodeModeKind): string;
@@ -230,6 +230,12 @@ begin
       ApplyVideoQuality(Settings, VideoQuality);
       ApplyAudioMode(Settings, AudioMode);
       ApplyEncodeMode(Settings, EncodeMode);
+      Settings.RotateOutputDegrees := NormalizeOutputRotationDegrees(
+        Ini.ReadInteger(SETTINGS_SECTION, 'RotateOutputDegrees',
+          Settings.RotateOutputDegrees));
+      if (Settings.RotateOutputDegrees = 0) and
+        Ini.ReadBool(SETTINGS_SECTION, 'RotateOutput90Degrees', False) then
+        Settings.RotateOutputDegrees := 90;
       Settings.ShowCheckLogAfterEncode := Ini.ReadBool(SETTINGS_SECTION,
         'ShowCheckLogAfterEncode', Settings.ShowCheckLogAfterEncode);
     finally
@@ -258,6 +264,10 @@ begin
         VideoQualityToName(VideoQualityFromSettings(Settings)));
       Ini.WriteString(SETTINGS_SECTION, 'AudioMode',
         AudioModeToName(AudioModeFromSettings(Settings)));
+      Ini.WriteInteger(SETTINGS_SECTION, 'RotateOutputDegrees',
+        NormalizeOutputRotationDegrees(Settings.RotateOutputDegrees));
+      Ini.WriteBool(SETTINGS_SECTION, 'RotateOutput90Degrees',
+        NormalizeOutputRotationDegrees(Settings.RotateOutputDegrees) = 90);
       Ini.WriteBool(SETTINGS_SECTION, 'ShowCheckLogAfterEncode',
         Settings.ShowCheckLogAfterEncode);
     finally

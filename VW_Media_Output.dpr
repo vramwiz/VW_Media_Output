@@ -32,19 +32,26 @@ end;
 procedure UpdateConfigText;
 var
   AudioText: string;
+  RotateText: string;
 begin
   EnsureCurrentSettings;
   if CurrentSettings.Audio.Enabled then
     AudioText := Format('AAC %d kbps', [CurrentSettings.Audio.BitRate div 1000])
   else
     AudioText := 'Audio none';
-  if CurrentSettings.EncodeMode = oemAlphaProRes then
-    LastConfigText := Format('%s / %s / alpha / %s',
-      [CurrentSettings.Container, CurrentSettings.Video.CodecName, AudioText])
+  if (NormalizeOutputRotationDegrees(CurrentSettings.RotateOutputDegrees) <> 0) and
+    (CurrentSettings.EncodeMode = oemNormal) then
+    RotateText := Format(' / rotate-meta%d',
+      [NormalizeOutputRotationDegrees(CurrentSettings.RotateOutputDegrees)])
   else
-    LastConfigText := Format('%s / %s / %s / %s',
+    RotateText := '';
+  if CurrentSettings.EncodeMode = oemAlphaProRes then
+    LastConfigText := Format('%s / %s / alpha / %s%s',
+      [CurrentSettings.Container, CurrentSettings.Video.CodecName, AudioText, RotateText])
+  else
+    LastConfigText := Format('%s / %s / %s / %s%s',
       [CurrentSettings.Container, CurrentSettings.Video.CodecName,
-       CurrentSettings.Video.PixelFormatName, AudioText]);
+       CurrentSettings.Video.PixelFormatName, AudioText, RotateText]);
 end;
 
 //------------------------------------------------------------------------------

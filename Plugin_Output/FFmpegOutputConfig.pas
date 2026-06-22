@@ -51,6 +51,7 @@ type
     Container                : string;                // container表示名
     Video                    : TOutputVideoSettings;  // video encoder設定
     Audio                    : TOutputAudioSettings;  // audio encoder設定
+    RotateOutputDegrees      : Integer;               // 通常MP4へ付与する回転metadata角度(0/90/180/270)
     ShowCheckLogAfterEncode  : Boolean;               // 確認ポイントがある場合に出力後check logを表示するか
   end;
 
@@ -96,6 +97,10 @@ procedure ApplyVideoQuality(var Settings: TOutputTestSettings; Quality: TOutputV
 procedure ApplyAudioMode(var Settings: TOutputTestSettings; Mode: TOutputAudioModeKind);
 // 出力モードをSettingsへ展開する。
 procedure ApplyEncodeMode(var Settings: TOutputTestSettings; Mode: TOutputEncodeModeKind);
+// 回転metadata角度を0/90/180/270へ正規化する。
+function NormalizeOutputRotationDegrees(Degrees: Integer): Integer;
+// 回転metadata角度をUI/log向け文字列へ変換する。
+function OutputRotationDegreesText(Degrees: Integer): string;
 // プラグインの既定設定を作る。
 procedure InitDefaultOutputSettings(var Settings: TOutputTestSettings);
 
@@ -480,6 +485,33 @@ begin
   end;
 end;
 
+function NormalizeOutputRotationDegrees(Degrees: Integer): Integer;
+begin
+  Result := Degrees mod 360;
+  if Result < 0 then
+    Inc(Result, 360);
+  case Result of
+    90, 180, 270:
+      ;
+  else
+    Result := 0;
+  end;
+end;
+
+function OutputRotationDegreesText(Degrees: Integer): string;
+begin
+  case NormalizeOutputRotationDegrees(Degrees) of
+    90:
+      Result := '90 deg clockwise';
+    180:
+      Result := '180 deg';
+    270:
+      Result := '270 deg clockwise';
+  else
+    Result := 'None';
+  end;
+end;
+
 // プラグインの既定設定を作る。INI読み込み前の基準値。
 procedure InitDefaultOutputSettings(var Settings: TOutputTestSettings);
 begin
@@ -487,6 +519,7 @@ begin
   Settings.PresetName := '';
   Settings.EncodeMode := oemNormal;
   Settings.Container := '';
+  Settings.RotateOutputDegrees := 0;
   Settings.ShowCheckLogAfterEncode := False;
   Settings.Video.CodecName := '';
   Settings.Video.EncoderName := '';

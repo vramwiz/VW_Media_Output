@@ -22,7 +22,8 @@ type
   public
     constructor Create(const SaveFileName, EncodeDescription: string;
       SourceWidth, SourceHeight, TotalFrames, Rate, Scale: Integer;
-      VideoInputKind: TOutputVideoInputKind; ShowCheckLogAfterEncode: Boolean);
+      VideoInputKind: TOutputVideoInputKind; RotateOutputDegrees: Integer;
+      ShowCheckLogAfterEncode: Boolean);
     destructor Destroy; override;
     procedure UpdateFrame(FrameIndex: Integer; FrameData: Pointer);
     procedure UpdateStatus(const Text: string);
@@ -35,6 +36,7 @@ type
     FScale             : Integer;                // AviUtl2のフレームレート分母
     FDurationMs        : Int64;                  // 動画全体の推定時間ms
     FVideoInputKind    : TOutputVideoInputKind;  // プレビュー変換に使う入力形式
+    FRotateOutputDegrees : Integer;              // プレビューも通常MP4の回転metadata出力に合わせるか
     FSaveFileName      : string;                 // check logの基準になる出力ファイル名
     FEncodeDescription : string;                 // check logへ記録するエンコード設定説明
     FLastTick          : UInt64;                 // 前回プレビュー表示を更新したtick
@@ -48,6 +50,7 @@ type
     FBitmap            : TObject;                // プレビュー表示用TBitmap
     FSwsContext        : Pointer;                // プレビュー縮小変換用sws context
     FPreviewBuffer     : TBytes;                 // BGR24へ変換したプレビュー画素buffer
+    FRotateBuffer      : TBytes;                 // 回転前に縮小したBGR24一時buffer
     FLogWriter         : TObject;                // check logを書き込むTStreamWriter
     FLogFileName       : string;                 // check logの出力先
     FCautionCount      : Integer;                // cautionとして記録した区間数
@@ -78,7 +81,7 @@ implementation
 uses
   System.Classes, System.Math, System.Types, Winapi.ShellAPI, Vcl.Controls,
   Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FFmpegApi,
-  FFmpegOutputSettingsStorage;
+  FFmpegOutputConfig, FFmpegOutputSettingsStorage;
 
 const
   PREVIEW_MAX_WIDTH              = 480;  // プレビュー表示の最大幅px
@@ -125,12 +128,68 @@ begin
   end;
 end;
 
+// BGR24のtop-down frameを90度単位で時計回りに実体回転する。
+procedure RotateBgr24Clockwise(const Source: TBytes; SourceWidth, SourceHeight,
+  SourceStride: Integer; var Destination: TBytes; DestinationStride,
+  RotationDegrees: Integer);
+var
+  DestX: Integer;
+  DestY: Integer;
+  DestPixel: PByte;
+  DestRow: PByte;
+  SourcePixel: PByte;
+  SourceRow: PByte;
+  Rotation: Integer;
+  X: Integer;
+  Y: Integer;
+begin
+  Rotation := NormalizeOutputRotationDegrees(RotationDegrees);
+  if (Length(Source) = 0) or (Length(Destination) = 0) or
+    (SourceWidth <= 0) or (SourceHeight <= 0) or
+    (SourceStride <= 0) or (DestinationStride <= 0) or (Rotation = 0) then
+    Exit;
+
+  for Y := 0 to SourceHeight - 1 do
+  begin
+    SourceRow := PByte(NativeUInt(@Source[0]) + NativeUInt(Y * SourceStride));
+    for X := 0 to SourceWidth - 1 do
+    begin
+      SourcePixel := PByte(NativeUInt(SourceRow) + NativeUInt(X * 3));
+      case Rotation of
+        90:
+          begin
+            DestX := SourceHeight - 1 - Y;
+            DestY := X;
+          end;
+        180:
+          begin
+            DestX := SourceWidth - 1 - X;
+            DestY := SourceHeight - 1 - Y;
+          end;
+      else
+        begin
+          DestX := Y;
+          DestY := SourceWidth - 1 - X;
+        end;
+      end;
+      DestRow := PByte(NativeUInt(@Destination[0]) + NativeUInt(DestY * DestinationStride));
+      DestPixel := PByte(NativeUInt(DestRow) + NativeUInt(DestX * 3));
+      DestPixel^ := SourcePixel^;
+      PByte(NativeUInt(DestPixel) + 1)^ := PByte(NativeUInt(SourcePixel) + 1)^;
+      PByte(NativeUInt(DestPixel) + 2)^ := PByte(NativeUInt(SourcePixel) + 2)^;
+    end;
+  end;
+end;
+
 // 出力情報を保持し、check logとプレビューウィンドウを準備する。
 constructor TOutputPreviewWindow.Create(const SaveFileName,
   EncodeDescription: string; SourceWidth, SourceHeight, TotalFrames, Rate,
   Scale: Integer; VideoInputKind: TOutputVideoInputKind;
+  RotateOutputDegrees: Integer;
   ShowCheckLogAfterEncode: Boolean);
 var
+  DisplayHeight: Integer;
+  DisplayWidth: Integer;
   PreviewScale: Double;
 begin
   inherited Create;
@@ -142,6 +201,7 @@ begin
   FRate := Rate;
   FScale := Scale;
   FVideoInputKind := VideoInputKind;
+  FRotateOutputDegrees := NormalizeOutputRotationDegrees(RotateOutputDegrees);
   FShowCheckLogAfterEncode := ShowCheckLogAfterEncode;
   FDurationMs := 0;
   if (FTotalFrames > 0) and (FRate > 0) and (FScale > 0) then
@@ -155,19 +215,27 @@ begin
   FDarkStartFrame := -1;
   FCurrentSeverity := opsNormal;
 
-  if (FSourceWidth <= 0) or (FSourceHeight <= 0) then
+  DisplayWidth := FSourceWidth;
+  DisplayHeight := FSourceHeight;
+  if (FRotateOutputDegrees = 90) or (FRotateOutputDegrees = 270) then
+  begin
+    DisplayWidth := FSourceHeight;
+    DisplayHeight := FSourceWidth;
+  end;
+
+  if (DisplayWidth <= 0) or (DisplayHeight <= 0) then
   begin
     FPreviewWidth := PREVIEW_MAX_WIDTH;
     FPreviewHeight := PREVIEW_MAX_HEIGHT;
   end
   else
   begin
-    PreviewScale := Min(PREVIEW_MAX_WIDTH / FSourceWidth,
-      PREVIEW_MAX_HEIGHT / FSourceHeight);
+    PreviewScale := Min(PREVIEW_MAX_WIDTH / DisplayWidth,
+      PREVIEW_MAX_HEIGHT / DisplayHeight);
     if PreviewScale > 1.0 then
       PreviewScale := 1.0;
-    FPreviewWidth := Max(1, Round(FSourceWidth * PreviewScale));
-    FPreviewHeight := Max(1, Round(FSourceHeight * PreviewScale));
+    FPreviewWidth := Max(1, Round(DisplayWidth * PreviewScale));
+    FPreviewHeight := Max(1, Round(DisplayHeight * PreviewScale));
   end;
 
   OpenLog;
@@ -198,6 +266,8 @@ var
   Gap: Integer;
   Margin: Integer;
   PanelHeight: Integer;
+  TempHeight: Integer;
+  TempWidth: Integer;
   TextHeight: Integer;
 begin
   Margin := 10;
@@ -289,12 +359,21 @@ begin
   Bitmap.Canvas.Brush.Color := clBlack;
   Bitmap.Canvas.FillRect(Rect(0, 0, Bitmap.Width, Bitmap.Height));
   SetLength(FPreviewBuffer, FPreviewWidth * FPreviewHeight * 3);
+  TempWidth := FPreviewWidth;
+  TempHeight := FPreviewHeight;
+  if (FRotateOutputDegrees = 90) or (FRotateOutputDegrees = 270) then
+  begin
+    TempWidth := FPreviewHeight;
+    TempHeight := FPreviewWidth;
+  end;
+  if FRotateOutputDegrees <> 0 then
+    SetLength(FRotateBuffer, TempWidth * TempHeight * 3);
   if (FSourceWidth > 0) and (FSourceHeight > 0) then
   begin
     TFFmpegApi.EnsureLoaded;
     FSwsContext := TFFmpegApi.sws_getContext(FSourceWidth, FSourceHeight,
-      OutputVideoInputFFmpegPixelFormat(FVideoInputKind), FPreviewWidth, FPreviewHeight,
-      AV_PIX_FMT_BGR24, SWS_BILINEAR, nil, nil, nil);
+      OutputVideoInputFFmpegPixelFormat(FVideoInputKind), TempWidth,
+      TempHeight, AV_PIX_FMT_BGR24, SWS_BILINEAR, nil, nil, nil);
   end;
 
   FForm := Form;
@@ -504,6 +583,8 @@ var
   DstLine: PByte;
   BufferLine: PByte;
   RowBytes: Integer;
+  TempHeight: Integer;
+  TempWidth: Integer;
 begin
   if (FrameData = nil) or (FBitmap = nil) or (FSwsContext = nil) or
     (Length(FPreviewBuffer) <= 0) then
@@ -520,11 +601,27 @@ begin
   SrcData[0] := Pointer(NativeUInt(FrameData) +
     OutputVideoInputFirstLineOffset(FVideoInputKind, FSourceWidth, FSourceHeight));
   SrcStrideArray[0] := OutputVideoInputSwsStride(FVideoInputKind, FSourceWidth);
+  TempWidth := FPreviewWidth;
+  TempHeight := FPreviewHeight;
+  if (FRotateOutputDegrees = 90) or (FRotateOutputDegrees = 270) then
+  begin
+    TempWidth := FPreviewHeight;
+    TempHeight := FPreviewWidth;
+  end;
   DstData[0] := @FPreviewBuffer[0];
   DstStrideArray[0] := FPreviewWidth * 3;
+  if FRotateOutputDegrees <> 0 then
+  begin
+    DstData[0] := @FRotateBuffer[0];
+    DstStrideArray[0] := TempWidth * 3;
+  end;
 
   TFFmpegApi.sws_scale(PSwsContext(FSwsContext), @SrcData[0], @SrcStrideArray[0],
     0, FSourceHeight, @DstData[0], @DstStrideArray[0]);
+  if FRotateOutputDegrees <> 0 then
+    RotateBgr24Clockwise(FRotateBuffer, TempWidth, TempHeight,
+      TempWidth * 3, FPreviewBuffer, FPreviewWidth * 3,
+      FRotateOutputDegrees);
 
   RowBytes := FPreviewWidth * 3;
   for Y := 0 to FPreviewHeight - 1 do

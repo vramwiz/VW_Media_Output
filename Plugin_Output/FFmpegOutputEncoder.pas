@@ -1,4 +1,4 @@
-unit FFmpegOutputEncoder;
+﻿unit FFmpegOutputEncoder;
 
 // AviUtl2 の OUTPUT_INFO から映像/音声を取得し、FFmpeg で出力ファイルへエンコードする。
 // 出力設定の解釈、FFmpeg encoder/muxer の準備、フレーム変換、進捗/診断ログを担当する。
@@ -122,6 +122,48 @@ begin
   Result := ResultCode >= 0;
   if not Result then
     ErrorMessage := Operation + ': ' + TFFmpegApi.ErrorText(ResultCode);
+end;
+
+// MP4/MOV系プレイヤーが解釈するdisplay matrix回転metadataをstreamへ追加する。
+function AddVideoDisplayRotation(Stream: PAVStream; RotationDegrees: Integer;
+  out ErrorMessage: string): Boolean;
+const
+  DISPLAY_MATRIX_SIZE = 9 * SizeOf(Integer);
+var
+  SideData: PAVPacketSideData; // codec parametersへ追加したdisplay matrix side data
+begin
+  ErrorMessage := '';
+  Result := False;
+
+  if Stream = nil then
+  begin
+    ErrorMessage := 'video stream is nil.';
+    Exit;
+  end;
+  if RotationDegrees mod 360 = 0 then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  if Stream^.codecpar = nil then
+  begin
+    ErrorMessage := 'video codec parameters is nil.';
+    Exit;
+  end;
+
+  SideData := TFFmpegApi.av_packet_side_data_new(
+    @Stream^.codecpar^.coded_side_data, @Stream^.codecpar^.nb_coded_side_data,
+    AV_PKT_DATA_DISPLAYMATRIX, DISPLAY_MATRIX_SIZE, 0);
+  if (SideData = nil) or (SideData^.data = nil) or
+     (SideData^.size < DISPLAY_MATRIX_SIZE) then
+  begin
+    ErrorMessage := 'av_packet_side_data_new(displaymatrix) failed.';
+    Exit;
+  end;
+
+  TFFmpegApi.av_display_rotation_set(PInteger(SideData^.data), RotationDegrees);
+  Result := True;
 end;
 
 // PCM16音声buffer内の最大絶対振幅を返す。
@@ -413,6 +455,7 @@ function OutputEncodeDescription(const Settings: TOutputTestSettings;
   VideoInputKind: TOutputVideoInputKind): string;
 var
   AudioText: string;
+  RotateText: string;
 begin
   if EffectiveSettings.Audio.Enabled then
     AudioText := Format('%s / %s / %d kbps / %d Hz / %d ch',
@@ -422,11 +465,19 @@ begin
   else
     AudioText := '音声なし';
 
+  if (Settings.EncodeMode = oemNormal) and
+    (NormalizeOutputRotationDegrees(Settings.RotateOutputDegrees) <> 0) then
+    RotateText := Format(' / rotation_metadata=%d',
+      [NormalizeOutputRotationDegrees(Settings.RotateOutputDegrees)])
+  else
+    RotateText := '';
+
   Result := Format('コンテナ=%s / 映像=%s / encoder=%s / pixel=%s / ' +
-    'video_bitrate=%d kbps / preset=%s / 入力=%s / 音声=%s',
+    'video_bitrate=%d kbps / preset=%s / 入力=%s / 音声=%s%s',
     [Settings.Container, Settings.Video.CodecName, string(Settings.Video.EncoderName),
      Settings.Video.PixelFormatName, Settings.Video.BitRate div 1000,
-     string(Settings.Video.Preset), OutputVideoInputName(VideoInputKind), AudioText]);
+     string(Settings.Video.Preset), OutputVideoInputName(VideoInputKind), AudioText,
+     RotateText]);
 end;
 
 // 設定からAviUtl2へ要求する映像入力形式を決める。
@@ -893,6 +944,9 @@ var
   AudioTargetSample: Integer;
   PreviewWindow: TOutputPreviewWindow;
   VideoInputKind: TOutputVideoInputKind;
+  RotateOutputDegrees: Integer;
+  OutputWidth: Integer;
+  OutputHeight: Integer;
 begin
   Result := False;
   ErrorMessage := '';
@@ -913,6 +967,12 @@ begin
 
   EffectiveSettings := Settings;
   VideoInputKind := OutputVideoInputKindForSettings(Settings);
+  RotateOutputDegrees := 0;
+  if Settings.EncodeMode = oemNormal then
+    RotateOutputDegrees :=
+      NormalizeOutputRotationDegrees(Settings.RotateOutputDegrees);
+  OutputWidth := oip^.w;
+  OutputHeight := oip^.h;
   if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) then
   begin
     if oip^.audio_rate > 0 then
@@ -953,9 +1013,11 @@ begin
   try
     if PerfLogger <> nil then
       PerfLogger.Trace(Format('encode_begin output_info w=%d h=%d frames=%d ' +
-        'rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d',
+        'rate=%d scale=%d audio_flag=%d audio_n=%d audio_rate=%d audio_ch=%d ' +
+        'rotate_degrees=%d output_w=%d output_h=%d',
         [oip^.w, oip^.h, oip^.n, oip^.rate, oip^.scale, oip^.flag,
-         oip^.audio_n, oip^.audio_rate, oip^.audio_ch]));
+         oip^.audio_n, oip^.audio_rate, oip^.audio_ch, RotateOutputDegrees,
+         OutputWidth, OutputHeight]));
     if (PerfLogger <> nil) and (OriginalSaveFileName <> EffectiveSaveFileName) then
       PerfLogger.Trace(Format('output_filename_adjusted from="%s" to="%s" reason=alpha_prores_requires_mov',
         [OriginalSaveFileName, EffectiveSaveFileName]));
@@ -988,8 +1050,8 @@ begin
     end;
     CodecPublic := PAVCodecContextPublic(CodecContext);
     CodecPublic^.bit_rate := Settings.Video.BitRate;
-    CodecPublic^.width := oip^.w;
-    CodecPublic^.height := oip^.h;
+    CodecPublic^.width := OutputWidth;
+    CodecPublic^.height := OutputHeight;
     CodecPublic^.time_base.num := oip^.scale;
     CodecPublic^.time_base.den := oip^.rate;
     CodecPublic^.framerate.num := oip^.rate;
@@ -1032,6 +1094,15 @@ begin
     Code := avcodec_parameters_from_context(Stream^.codecpar, CodecContext);
     if not CheckFFmpeg(Code, 'avcodec_parameters_from_context', ErrorMessage) then
       Exit;
+    if RotateOutputDegrees <> 0 then
+    begin
+      if not AddVideoDisplayRotation(Stream, -RotateOutputDegrees, ErrorMessage) then
+        Exit;
+      if PerfLogger <> nil then
+        PerfLogger.Trace(Format(
+          'video display_rotation_metadata=%d clockwise%d',
+          [-RotateOutputDegrees, RotateOutputDegrees]));
+    end;
 
     if ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) and (oip^.audio_n > 0) and
       Assigned(oip^.func_get_audio) and Settings.Audio.Enabled then
@@ -1063,8 +1134,8 @@ begin
       Exit;
     end;
     Frame^.format := EncoderPixelFormat;
-    Frame^.width := oip^.w;
-    Frame^.height := oip^.h;
+    Frame^.width := OutputWidth;
+    Frame^.height := OutputHeight;
     Code := av_frame_get_buffer(Frame, 32);
     if not CheckFFmpeg(Code, 'av_frame_get_buffer', ErrorMessage) then
       Exit;
@@ -1076,8 +1147,9 @@ begin
       Exit;
     end;
 
-    SwsContext := TFFmpegApi.sws_getContext(oip^.w, oip^.h, OutputVideoInputFFmpegPixelFormat(VideoInputKind),
-      oip^.w, oip^.h, EncoderPixelFormat, SWS_BILINEAR, nil, nil, nil);
+    SwsContext := TFFmpegApi.sws_getContext(oip^.w, oip^.h,
+      OutputVideoInputFFmpegPixelFormat(VideoInputKind), OutputWidth, OutputHeight,
+      EncoderPixelFormat, SWS_BILINEAR, nil, nil, nil);
     if SwsContext = nil then
     begin
       ErrorMessage := 'sws_getContext failed.';
@@ -1092,7 +1164,8 @@ begin
 
     PreviewWindow := TOutputPreviewWindow.Create(EffectiveSaveFileName,
       OutputEncodeDescription(Settings, EffectiveSettings, VideoInputKind), oip^.w, oip^.h,
-      oip^.n, oip^.rate, oip^.scale, VideoInputKind, Settings.ShowCheckLogAfterEncode);
+      oip^.n, oip^.rate, oip^.scale, VideoInputKind, RotateOutputDegrees,
+      Settings.ShowCheckLogAfterEncode);
     if PerfLogger <> nil then
       PerfLogger.Trace('preview_window_created');
 
@@ -1156,6 +1229,7 @@ begin
       SrcData[0] := Pointer(NativeUInt(FrameData) +
         OutputVideoInputFirstLineOffset(VideoInputKind, oip^.w, oip^.h));
       SrcStride[0] := OutputVideoInputSwsStride(VideoInputKind, oip^.w);
+      StageStopwatch := TStopwatch.StartNew;
       DstData[0] := Frame^.data[0];
       DstData[1] := Frame^.data[1];
       DstData[2] := Frame^.data[2];
@@ -1164,7 +1238,6 @@ begin
       DstStride[1] := Frame^.linesize[1];
       DstStride[2] := Frame^.linesize[2];
       DstStride[3] := Frame^.linesize[3];
-      StageStopwatch := TStopwatch.StartNew;
       TFFmpegApi.sws_scale(SwsContext, @SrcData[0], @SrcStride[0], 0, oip^.h,
         @DstData[0], @DstStride[0]);
       StageStopwatch.Stop;

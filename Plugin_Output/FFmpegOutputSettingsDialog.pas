@@ -24,10 +24,39 @@ type
     ComboEncoder : TComboBox; // encoder選択
     ComboQuality : TComboBox; // video quality選択
     ComboAudio   : TComboBox; // audio bitrate選択
+    ComboRotate  : TComboBox; // 通常MP4の回転metadata角度選択
     LabelSettings: TLabel;    // 下部の短い設定概要
     procedure SettingChange(Sender: TObject);
     procedure UpdateSettingsLabel;
   end;
+
+function RotationComboIndex(Degrees: Integer): Integer;
+begin
+  case NormalizeOutputRotationDegrees(Degrees) of
+    90:
+      Result := 1;
+    180:
+      Result := 2;
+    270:
+      Result := 3;
+  else
+    Result := 0;
+  end;
+end;
+
+function RotationDegreesByComboIndex(Index: Integer): Integer;
+begin
+  case Index of
+    1:
+      Result := 90;
+    2:
+      Result := 180;
+    3:
+      Result := 270;
+  else
+    Result := 0;
+  end;
+end;
 
 // いずれかの選択が変わったら概要表示だけ更新する。
 procedure TOutputSettingsDialogHandler.SettingChange(Sender: TObject);
@@ -44,10 +73,13 @@ var
   AudioMode: TOutputAudioModeKind;
   BitRate: Int64;
   AudioText: string;
+  RotateText: string;
 begin
-  if (ComboMode = nil) or (ComboEncoder = nil) or (ComboQuality = nil) or (ComboAudio = nil) or
+  if (ComboMode = nil) or (ComboEncoder = nil) or (ComboQuality = nil) or
+     (ComboAudio = nil) or (ComboRotate = nil) or
      (LabelSettings = nil) or (ComboEncoder.ItemIndex < 0) or
-     (ComboMode.ItemIndex < 0) or (ComboQuality.ItemIndex < 0) or (ComboAudio.ItemIndex < 0) then
+     (ComboMode.ItemIndex < 0) or (ComboQuality.ItemIndex < 0) or
+     (ComboAudio.ItemIndex < 0) or (ComboRotate.ItemIndex < 0) then
     Exit;
 
   Mode := OutputEncodeModeByIndex(ComboMode.ItemIndex);
@@ -79,14 +111,20 @@ begin
   else
     AudioText := 'AAC 192 kbps';
   end;
+  if (Mode = oemNormal) and
+    (RotationDegreesByComboIndex(ComboRotate.ItemIndex) <> 0) then
+    RotateText := ' / rotate-meta' +
+      IntToStr(RotationDegreesByComboIndex(ComboRotate.ItemIndex))
+  else
+    RotateText := '';
 
   if Mode = oemAlphaProRes then
     LabelSettings.Caption :=
       Format('MOV / ProRes 4444 / PA64 alpha / %s', [AudioText]) + sLineBreak +
-      'Transparency-preserving dedicated encode path'
+      'Transparency-preserving dedicated encode path' + RotateText
   else
     LabelSettings.Caption :=
-      Format('MP4 / %s / %s', [Info.DisplayName, AudioText]) + sLineBreak +
+      Format('MP4 / %s / %s%s', [Info.DisplayName, AudioText, RotateText]) + sLineBreak +
       Format('Video %s / %.1f Mbps', [OutputVideoQualityName(Quality),
         BitRate / 1000000.0]);
 end;
@@ -134,6 +172,8 @@ var
   ComboQuality: TComboBox;
   LabelAudio: TLabel;
   ComboAudio: TComboBox;
+  LabelRotate: TLabel;
+  ComboRotate: TComboBox;
   LabelSettings: TLabel;
   ButtonOk: TButton;
   ButtonCancel: TButton;
@@ -153,6 +193,7 @@ var
   EncoderWidth: Integer;
   QualityWidth: Integer;
   AudioWidth: Integer;
+  RotateWidth: Integer;
   SettingsHeight: Integer;
   ButtonTop: Integer;
 
@@ -214,11 +255,13 @@ begin
     EncoderWidth := EncoderComboWidth(S(280));
     QualityWidth := TextWidthWithPadding('High quality', S(170));
     AudioWidth := TextWidthWithPadding('AAC 576 kbps', S(170));
+    RotateWidth := TextWidthWithPadding('270 deg clockwise', S(190));
     SettingsHeight := Dialog.Canvas.TextHeight('MP4') * 2 + S(14);
     Dialog.ClientWidth := Margin * 2 + EncoderWidth + Gap + QualityWidth;
     Dialog.ClientHeight := Margin + LabelHeight + LabelGap + ComboHeight +
       RowGap + LabelHeight + LabelGap + ComboHeight +
-      RowGap + LabelHeight + LabelGap + ComboHeight + RowGap + SettingsHeight +
+      RowGap + LabelHeight + LabelGap + ComboHeight +
+      RowGap + SettingsHeight +
       RowGap + ButtonHeight + Margin;
     ButtonTop := Dialog.ClientHeight - Margin - ButtonHeight;
 
@@ -293,6 +336,25 @@ begin
       ComboAudio.Items.Add(OutputAudioModeName(OutputAudioModeByIndex(Index)));
     ComboAudio.ItemIndex := OutputAudioModeIndex(AudioModeFromSettings(Settings));
 
+    LabelRotate := TLabel.Create(Dialog);
+    LabelRotate.Parent := Dialog;
+    LabelRotate.Left := ComboAudio.Left + ComboAudio.Width + Gap;
+    LabelRotate.Top := LabelAudio.Top;
+    LabelRotate.Caption := 'Rotation metadata';
+
+    ComboRotate := TComboBox.Create(Dialog);
+    ComboRotate.Parent := Dialog;
+    ComboRotate.Left := LabelRotate.Left;
+    ComboRotate.Top := ComboAudio.Top;
+    ComboRotate.Width := Min(RotateWidth, Dialog.ClientWidth - ComboRotate.Left - Margin);
+    ComboRotate.Height := ComboHeight;
+    ComboRotate.Style := csDropDownList;
+    ComboRotate.Items.Add(OutputRotationDegreesText(0));
+    ComboRotate.Items.Add(OutputRotationDegreesText(90));
+    ComboRotate.Items.Add(OutputRotationDegreesText(180));
+    ComboRotate.Items.Add(OutputRotationDegreesText(270));
+    ComboRotate.ItemIndex := RotationComboIndex(Settings.RotateOutputDegrees);
+
     LabelSettings := TLabel.Create(Dialog);
     LabelSettings.Parent := Dialog;
     LabelSettings.Left := Margin;
@@ -327,11 +389,13 @@ begin
     DialogHandler.ComboEncoder := ComboEncoder;
     DialogHandler.ComboQuality := ComboQuality;
     DialogHandler.ComboAudio := ComboAudio;
+    DialogHandler.ComboRotate := ComboRotate;
     DialogHandler.LabelSettings := LabelSettings;
     ComboMode.OnChange := DialogHandler.SettingChange;
     ComboEncoder.OnChange := DialogHandler.SettingChange;
     ComboQuality.OnChange := DialogHandler.SettingChange;
     ComboAudio.OnChange := DialogHandler.SettingChange;
+    ComboRotate.OnChange := DialogHandler.SettingChange;
     DialogHandler.UpdateSettingsLabel;
 
     if Dialog.ShowModal <> mrOk then
@@ -345,6 +409,8 @@ begin
     ApplyVideoQuality(Settings, OutputVideoQualityByIndex(ComboQuality.ItemIndex));
     ApplyAudioMode(Settings, OutputAudioModeByIndex(ComboAudio.ItemIndex));
     ApplyEncodeMode(Settings, OutputEncodeModeByIndex(ComboMode.ItemIndex));
+    Settings.RotateOutputDegrees :=
+      RotationDegreesByComboIndex(ComboRotate.ItemIndex);
     Result := True;
   finally
     Dialog.Free;
