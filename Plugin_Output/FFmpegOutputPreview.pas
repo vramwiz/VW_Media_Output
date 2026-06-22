@@ -40,6 +40,7 @@ type
     FSaveFileName      : string;                 // check logの基準になる出力ファイル名
     FEncodeDescription : string;                 // check logへ記録するエンコード設定説明
     FLastTick          : UInt64;                 // 前回プレビュー表示を更新したtick
+    FLastBringForwardTick : UInt64;              // 前回プレビューを前面へ寄せたtick
     FForm              : TObject;                // 実体のTFormを遅延参照する枠
     FImage             : TObject;                // 実体のTImageを遅延参照する枠
     FPreviewPanel      : TObject;                // 実体のプレビュー配置用TPanelを遅延参照する枠
@@ -73,6 +74,7 @@ type
     procedure LogOptionClick(Sender: TObject);
     procedure LogOptionLabelClick(Sender: TObject);
     procedure ResizeControls(Sender: TObject);
+    procedure BringWindowForward(Force: Boolean);
     procedure SetStatus(Severity: TOutputPreviewSeverity; const Text: string);
   end;
 
@@ -87,6 +89,7 @@ const
   PREVIEW_MAX_WIDTH              = 480;  // プレビュー表示の最大幅px
   PREVIEW_MAX_HEIGHT             = 270;  // プレビュー表示の最大高さpx
   PREVIEW_UPDATE_INTERVAL_MS     = 200;  // 画面表示更新を間引く最短間隔ms
+  PREVIEW_BRING_FORWARD_INTERVAL_MS = 3000; // 非モーダルプレビューを前面へ寄せ直す最短間隔ms
   FRAME_CHECK_DARK_CORNER_SIZE   = 8;    // 暗いフレーム判定に使う四隅の検査サイズpx
   FRAME_CHECK_DARK_CORNER_THRESHOLD = 18; // 暗いフレーム判定で使う平均輝度の上限
   DARK_CAUTION_DURATION_MS       = 500;  // cautionへ上げる暗い区間の継続時間ms
@@ -207,6 +210,7 @@ begin
   if (FTotalFrames > 0) and (FRate > 0) and (FScale > 0) then
     FDurationMs := (Int64(FTotalFrames) * FScale * 1000) div FRate;
   FLastTick := 0;
+  FLastBringForwardTick := 0;
   FSwsContext := nil;
   FLogWriter := nil;
   FCautionCount := 0;
@@ -388,6 +392,7 @@ begin
   ResizeControls(Form);
 
   Form.Show;
+  BringWindowForward(True);
   Application.ProcessMessages;
 end;
 
@@ -516,6 +521,33 @@ begin
   if FCheckLogLabel <> nil then
     TLabel(FCheckLogLabel).Width := TPanel(FControlPanel).ClientWidth -
       TLabel(FCheckLogLabel).Left - CONTROL_MARGIN;
+end;
+
+// 非モーダルのまま、フォーカスを奪わずプレビューを前面へ寄せる。
+procedure TOutputPreviewWindow.BringWindowForward(Force: Boolean);
+var
+  Form: TForm;
+  Flags: UINT;
+  Handle: HWND;
+  NowTick: UInt64;
+begin
+  if FForm = nil then
+    Exit;
+
+  NowTick := GetTickCount64;
+  if (not Force) and (FLastBringForwardTick <> 0) and
+    ((NowTick - FLastBringForwardTick) < PREVIEW_BRING_FORWARD_INTERVAL_MS) then
+    Exit;
+  FLastBringForwardTick := NowTick;
+
+  Form := TForm(FForm);
+  Handle := Form.Handle;
+  if (Handle = 0) or (not IsWindow(Handle)) or IsIconic(Handle) then
+    Exit;
+
+  Flags := SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_SHOWWINDOW;
+  SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, Flags);
+  SetWindowPos(Handle, HWND_NOTOPMOST, 0, 0, 0, 0, Flags);
 end;
 
 // 継続中の暗いフレーム区間を指定フレームで終了させてログへ記録する。
@@ -774,6 +806,7 @@ begin
 
   Image := TImage(FImage);
   Image.Picture.Assign(TBitmap(FBitmap));
+  BringWindowForward(False);
   Application.ProcessMessages;
 end;
 
@@ -783,7 +816,10 @@ begin
   if FStatusLabel <> nil then
     TLabel(FStatusLabel).Caption := Text;
   if FForm <> nil then
+  begin
+    BringWindowForward(True);
     Application.ProcessMessages;
+  end;
 end;
 
 end.
