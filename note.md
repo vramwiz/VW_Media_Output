@@ -1776,3 +1776,53 @@ function PrepareFrameBuffer(Decoder: TFFmpegDecoder; out Buffer: Pointer;
   - Win64 Debug: 成功、警告 0 / エラー 0。
   - Win64 Release: 成功、警告 0 / エラー 0。
   - PostBuild により `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー済み。
+
+## 2026-07-10 優先度高: 出力中の進捗表示が更新されないことがある
+
+症状:
+
+- AviUtl2 上で出力中の進捗がしばらく更新されないまま、最後に 100% まで進んで終了することがある。
+- 出力自体は完了するため、エンコード停止ではなく進捗通知の粒度または通知位置の問題として見る。
+
+現状の見立て:
+
+- AviUtl2 への進捗通知は `Plugin_Output\FFmpegOutputEncoder.pas` の映像ループ末尾で呼ぶ
+  `oip^.func_rest_time_disp(FrameIndex + 1, oip^.n)` にほぼ依存している。
+- この呼び出しは、1 フレーム分の以下の処理がすべて終わった後にだけ実行される。
+  - `func_get_video`
+  - preview 更新と確認ポイント検出
+  - `sws_scale` による映像変換
+  - video encode/write
+  - 必要分の audio prefetch
+- そのため、上記のどこかで長く待つと AviUtl2 側の進捗表示は更新されない。
+- video loop 後の以下の処理中も、現在は `func_rest_time_disp` を定期的には呼んでいない。
+  - video encoder flush
+  - audio encode
+  - audio encoder flush
+  - `av_write_trailer`
+- 特に音声処理や flush/trailer が長い場合、ユーザーには「進捗が止まって最後だけ 100% になる」ように見えやすい。
+
+優先して対応する内容:
+
+- `func_rest_time_disp` 呼び出しを、映像フレーム末尾だけでなく長時間処理の途中にも追加する。
+- `PrefetchAudioUntilSample` 内で一定サンプル数ごと、または一定時間ごとに進捗通知する。
+- `EncodeAudioFromPcmBuffer` 内で一定サンプル数ごと、または一定時間ごとに進捗通知する。
+- video flush / audio flush / `av_write_trailer` の前後で、少なくとも「生存確認」として現在値の進捗通知を行う。
+- 必要なら `func_rest_time_disp` を直接呼ぶ処理を小さな補助手続きにまとめ、通知間隔を短くしすぎないよう throttle する。
+
+確認に使うログ:
+
+- `.perf.log` の以下を確認し、どの区間で進捗が止まって見えているか切り分ける。
+  - `get_video`
+  - `video_convert`
+  - `video_encode_write`
+  - `audio_prefetch_*`
+  - `audio_encode_call_begin` / `audio_encode_call_end`
+  - `video_flush_begin` / `video_flush_end`
+  - `audio_flush_begin` / `audio_flush_end`
+  - `av_write_trailer_begin` / `av_write_trailer_end`
+
+注意:
+
+- これは出力結果の正しさよりも体感上の停止感に関わる問題だが、キャンセル不能に見えやすいため優先度は高い。
+- 進捗の `now/total` を無理に 100% へ進めるのではなく、長時間区間では同じ値でも定期的に通知して AviUtl2 側を更新させる方針にする。
