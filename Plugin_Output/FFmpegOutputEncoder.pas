@@ -35,6 +35,7 @@ const
   AV_SAMPLE_FMT_FLTP          = 8;                                // FFmpegのAAC encoder入力sample format
   ALPHA_LOG_FIRST_FRAMES      = 5;                                // alpha診断を必ず出す先頭frame数
   ALPHA_LOG_EVERY_N_FRAMES    = 30;                               // alpha診断を定期出力する間隔
+  PROGRESS_NOTIFY_INTERVAL_MS = 250;                              // 長時間処理中に進捗を再通知する最短間隔
 
 var
   CurrentAborted                  : Boolean;                          // UI側から出力中断が要求されたか
@@ -71,6 +72,22 @@ begin
   Result := CurrentAborted;
   if (not Result) and (oip <> nil) and Assigned(oip^.func_is_abort) then
     Result := oip^.func_is_abort;
+end;
+
+// 長時間処理中もAviUtl2の進捗表示を更新する。Force=False時は通知頻度を抑える。
+procedure NotifyAviUtlProgress(oip: POutputInfo; Current, Total: Integer;
+  var LastNotifyTick: UInt64; Force: Boolean = False);
+var
+  Tick: UInt64;
+begin
+  if (oip = nil) or not Assigned(oip^.func_rest_time_disp) then
+    Exit;
+  Tick := GetTickCount64;
+  if (not Force) and (LastNotifyTick <> 0) and
+    ((Tick - LastNotifyTick) < PROGRESS_NOTIFY_INTERVAL_MS) then
+    Exit;
+  oip^.func_rest_time_disp(Current, Total);
+  LastNotifyTick := Tick;
 end;
 
 // 出力に必要なFFmpeg関数をDLLから遅延取得する。
@@ -569,7 +586,7 @@ end;
 // AviUtl2のfunc_get_audioからPCM16を指定sample位置まで先読みする。
 function PrefetchAudioUntilSample(oip: POutputInfo; const Settings: TOutputTestSettings;
   PerfLogger: TOutputPerfLogger; var AudioPcm: TBytes; var AudioSampleCount: Integer;
-  TargetSample: Integer;
+  TargetSample, ProgressCurrent, ProgressTotal: Integer; var LastProgressNotifyTick: UInt64;
   out ErrorMessage: string): Boolean;
 var
   SampleStart: Integer;
@@ -671,6 +688,7 @@ begin
     Move(PByte(AudioData)^, AudioPcm[Integer(DestOffset)], Integer(CopyBytes));
     Inc(SampleStart, Readed);
     AudioSampleCount := SampleStart;
+    NotifyAviUtlProgress(oip, ProgressCurrent, ProgressTotal, LastProgressNotifyTick);
 
     if (PerfLogger <> nil) and
       ((SampleStart - LastAudioTraceSample) >= Settings.Audio.SampleRate * 5) then
@@ -714,6 +732,7 @@ end;
 function EncodeAudioFromPcmBuffer(FormatContext: PAVFormatContext; AudioCodecContext: PAVCodecContext;
   AudioStream: PAVStream; Packet: PAVPacket; oip: POutputInfo; const Settings: TOutputTestSettings;
   AudioPcm: PByte; AudioSampleCount: Integer; PerfLogger: TOutputPerfLogger;
+  ProgressCurrent, ProgressTotal: Integer; var LastProgressNotifyTick: UInt64;
   out ErrorMessage: string): Boolean;
 var
   Frame: PAVFrame;
@@ -855,6 +874,7 @@ begin
           Exit;
         end;
         Inc(AudioOffset, EncodeSamples);
+        NotifyAviUtlProgress(oip, ProgressCurrent, ProgressTotal, LastProgressNotifyTick);
       end;
       Inc(SampleStart, SamplesToRead);
       if (PerfLogger <> nil) and
@@ -869,6 +889,7 @@ begin
     if PerfLogger <> nil then
       PerfLogger.Trace(Format('audio_flush_begin sample=%d/%d',
         [SampleStart, AudioSampleCount]));
+    NotifyAviUtlProgress(oip, ProgressCurrent, ProgressTotal, LastProgressNotifyTick, True);
     StageStopwatch := TStopwatch.StartNew;
     Result := SendFrameAndWritePackets(FormatContext, AudioCodecContext, AudioStream,
       Packet, nil, ErrorMessage);
@@ -880,6 +901,7 @@ begin
     if PerfLogger <> nil then
       PerfLogger.Trace(Format('audio_flush_end elapsed_ms=%.3f',
         [StopwatchElapsedMs(StageStopwatch)]));
+    NotifyAviUtlProgress(oip, ProgressCurrent, ProgressTotal, LastProgressNotifyTick, True);
 
     Result := True;
   finally
@@ -942,6 +964,7 @@ var
   AudioPcm: TBytes;
   AudioSampleCount: Integer;
   AudioTargetSample: Integer;
+  LastProgressNotifyTick: UInt64;
   PreviewWindow: TOutputPreviewWindow;
   VideoInputKind: TOutputVideoInputKind;
   RotateOutputDegrees: Integer;
@@ -963,6 +986,7 @@ begin
   PerfLogFinished := False;
   PerfStatus := 'not_started';
   AudioSampleCount := 0;
+  LastProgressNotifyTick := 0;
   PreviewWindow := nil;
 
   EffectiveSettings := Settings;
@@ -1290,7 +1314,8 @@ begin
             PerfLogger.Trace(Format('audio_prefetch_call_begin frame=%d target_sample=%d',
               [FrameIndex + 1, AudioTargetSample]));
           if not PrefetchAudioUntilSample(oip, EffectiveSettings, PerfLogger, AudioPcm,
-            AudioSampleCount, AudioTargetSample, ErrorMessage) then
+            AudioSampleCount, AudioTargetSample, FrameIndex + 1, oip^.n,
+            LastProgressNotifyTick, ErrorMessage) then
           begin
             if OutputAbortRequested(oip) or CurrentAborted then
               Aborted := True
@@ -1305,8 +1330,7 @@ begin
         end;
       end;
 
-      if Assigned(oip^.func_rest_time_disp) then
-        oip^.func_rest_time_disp(FrameIndex + 1, oip^.n);
+      NotifyAviUtlProgress(oip, FrameIndex + 1, oip^.n, LastProgressNotifyTick, True);
       if Assigned(OnProgress) then
         OnProgress(FrameIndex + 1, oip^.n, CurrentFps, AverageFps, MinFps, MaxFps);
       if PerfLogger <> nil then
@@ -1330,6 +1354,7 @@ begin
     begin
       if PerfLogger <> nil then
         PerfLogger.Trace('video_flush_begin');
+      NotifyAviUtlProgress(oip, EncodedFrameCount, oip^.n, LastProgressNotifyTick, True);
       StageStopwatch := TStopwatch.StartNew;
       Result := SendFrameAndWritePackets(FormatContext, CodecContext, Stream, Packet, nil, ErrorMessage);
       StageStopwatch.Stop;
@@ -1341,6 +1366,7 @@ begin
         PerfLogger.Trace(Format('video_flush_end result=%s elapsed_ms=%.3f fatal=%s',
           [BoolToStr(Result, True), StopwatchElapsedMs(StageStopwatch),
            BoolToStr(FatalAfterHeader, True)]));
+      NotifyAviUtlProgress(oip, EncodedFrameCount, oip^.n, LastProgressNotifyTick, True);
     end;
 
     if (not Aborted) and OutputAbortRequested(oip) then
@@ -1367,10 +1393,11 @@ begin
       if (Length(AudioPcm) > 0) and (AudioSampleCount > 0) then
         Result := EncodeAudioFromPcmBuffer(FormatContext, AudioCodecContext, AudioStream,
           Packet, oip, EffectiveSettings, @AudioPcm[0], AudioSampleCount, PerfLogger,
-          ErrorMessage)
+          EncodedFrameCount, oip^.n, LastProgressNotifyTick, ErrorMessage)
       else
         Result := EncodeAudioFromPcmBuffer(FormatContext, AudioCodecContext, AudioStream,
-          Packet, oip, EffectiveSettings, nil, 0, PerfLogger, ErrorMessage);
+          Packet, oip, EffectiveSettings, nil, 0, PerfLogger, EncodedFrameCount,
+          oip^.n, LastProgressNotifyTick, ErrorMessage);
       if not Result then
       begin
         if OutputAbortRequested(oip) or CurrentAborted then
@@ -1387,11 +1414,13 @@ begin
     begin
       if PerfLogger <> nil then
         PerfLogger.Trace('av_write_trailer_begin');
+      NotifyAviUtlProgress(oip, EncodedFrameCount, oip^.n, LastProgressNotifyTick, True);
       Code := av_write_trailer(FormatContext);
       if not CheckFFmpeg(Code, 'av_write_trailer', ErrorMessage) then
         Exit;
       if PerfLogger <> nil then
         PerfLogger.Trace('av_write_trailer_end');
+      NotifyAviUtlProgress(oip, EncodedFrameCount, oip^.n, LastProgressNotifyTick, True);
     end
     else if PerfLogger <> nil then
       PerfLogger.Trace('av_write_trailer_skipped_by_abort');

@@ -1826,3 +1826,23 @@ function PrepareFrameBuffer(Decoder: TFFmpegDecoder; out Buffer: Pointer;
 
 - これは出力結果の正しさよりも体感上の停止感に関わる問題だが、キャンセル不能に見えやすいため優先度は高い。
 - 進捗の `now/total` を無理に 100% へ進めるのではなく、長時間区間では同じ値でも定期的に通知して AviUtl2 側を更新させる方針にする。
+
+## 2026-07-12 出力中の進捗通知を長時間処理へ追加
+
+- `NotifyAviUtlProgress` を追加し、`func_rest_time_disp` の呼び出しを共通化した。
+- 通常の映像フレーム末尾では従来どおり毎フレーム通知する。
+- 長時間処理内では同じ `now/total` を再通知し、250 ms 未満の連続通知は間引く。
+- 通知を追加した区間:
+  - `PrefetchAudioUntilSample` の音声チャンク取得後
+  - `EncodeAudioFromPcmBuffer` のAACフレーム書き込み後
+  - video encoder flush の前後
+  - audio encoder flush の前後
+  - `av_write_trailer` の前後
+- flush / trailer は単一のFFmpeg呼び出し自体が長時間ブロックする場合、その呼び出し中に割り込んで通知することはできないため、前後の生存通知としている。
+- 進捗値を実処理以上に進めず、完了済み映像フレーム数と総フレーム数を通知する。
+- ビルド確認:
+  - Win64 Debug: 成功、警告 0 / エラー 0。
+  - Win64 Release: 成功、警告 0 / エラー 0。
+  - PostBuild により `C:\ProgramData\aviutl2\Plugin\VW_Media_Output\VW_Media_Output.auo2` へコピー済み。
+- 次の確認:
+  - AviUtl2 を再起動し、音声処理が長い素材で出力中の進捗表示が定期的に更新されるか実機確認する。
