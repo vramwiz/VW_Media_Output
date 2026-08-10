@@ -83,7 +83,7 @@ implementation
 uses
   System.Classes, System.Math, System.Types, Winapi.ShellAPI, Vcl.Controls,
   Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.StdCtrls, FFmpegApi,
-  FFmpegOutputConfig, FFmpegOutputSettingsStorage;
+  FFmpegOutputConfig, FFmpegOutputHostLog, FFmpegOutputSettingsStorage;
 
 const
   PREVIEW_MAX_WIDTH              = 480;  // プレビュー表示の最大幅px
@@ -424,14 +424,16 @@ begin
   CloseLog;
 end;
 
-// 出力ファイル名に対応するcheck logを開き、検査条件を書き出す。
+// 設定INIと同じフォルダの固定名check logを開き、検査条件を書き出す。
 procedure TOutputPreviewWindow.OpenLog;
+var
+  LogDirectory: string;
 begin
-  if FSaveFileName = '' then
-    Exit;
-
-  FLogFileName := FSaveFileName + '.check.log';
+  FLogFileName := OutputCheckLogPath;
   try
+    LogDirectory := ExtractFilePath(FLogFileName);
+    if LogDirectory <> '' then
+      ForceDirectories(LogDirectory);
     FLogWriter := TStreamWriter.Create(FLogFileName, False, TEncoding.UTF8);
     LogLine('VW Media Output チェックログ');
     LogLine('');
@@ -485,6 +487,10 @@ begin
   if FShowCheckLogAfterEncode and (IssueCount > 0) and (FLogFileName <> '') and
     FileExists(FLogFileName) then
     ShellExecute(0, 'open', PChar(FLogFileName), nil, nil, SW_SHOWNORMAL);
+  if IssueCount > 0 then
+    OutputHostLogWarning(Format('VW Media Output: 確認ポイント %d件 ' +
+      '(異常 %d / 警告 %d / 疑い %d) | 詳細: %s',
+      [IssueCount, FErrorCount, FWarningCount, FCautionCount, FLogFileName]));
 end;
 
 // 終了後check log表示の切り替えを保持する。

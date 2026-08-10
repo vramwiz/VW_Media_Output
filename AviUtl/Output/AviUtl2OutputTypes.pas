@@ -9,6 +9,15 @@ type
   LPCWSTR = PWideChar;
   PProjectFile = Pointer;
 
+  PLogHandle = ^TLogHandle;
+  TLogHandle = record
+    log: procedure(handle: PLogHandle; message: LPCWSTR); cdecl;
+    info: procedure(handle: PLogHandle; message: LPCWSTR); cdecl;
+    warn: procedure(handle: PLogHandle; message: LPCWSTR); cdecl;
+    error: procedure(handle: PLogHandle; message: LPCWSTR); cdecl;
+    verbose: procedure(handle: PLogHandle; message: LPCWSTR); cdecl;
+  end;
+
 const
   OUTPUT_INFO_FLAG_VIDEO = 1;
   OUTPUT_INFO_FLAG_AUDIO = 2;

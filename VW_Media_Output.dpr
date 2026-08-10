@@ -2,11 +2,14 @@
 
 uses
   Winapi.Windows,
+  System.Diagnostics,
+  System.IOUtils,
   System.SysUtils,
   AviUtl2OutputTypes in 'AviUtl\Output\AviUtl2OutputTypes.pas',
   FFmpegApi in 'Plugin_Output\FFmpegApi.pas',
   FFmpegOutputConfig in 'Plugin_Output\FFmpegOutputConfig.pas',
   FFmpegOutputEncoder in 'Plugin_Output\FFmpegOutputEncoder.pas',
+  FFmpegOutputHostLog in 'Plugin_Output\FFmpegOutputHostLog.pas',
   FFmpegOutputApiTypes in 'Plugin_Output\FFmpegOutputApiTypes.pas',
   FFmpegOutputPerfLog in 'Plugin_Output\FFmpegOutputPerfLog.pas',
   FFmpegOutputPreview in 'Plugin_Output\FFmpegOutputPreview.pas',
@@ -18,6 +21,89 @@ var
   CurrentSettings: TOutputTestSettings; // DLL内で保持する現在の出力設定
   CurrentSettingsInitialized: Boolean = False; // INI読み込み済みかどうか
   LastConfigText: string = ''; // AviUtl2の保存ダイアログ下部へ返す文字列
+
+// AviUtl2のinfoログへ短い動作状況を出す。
+procedure LogInfo(const MessageText: string);
+begin
+  OutputHostLogInfo(MessageText);
+end;
+
+// AviUtl2のwarnログへ中断などの結果を出す。
+procedure LogWarning(const MessageText: string);
+begin
+  OutputHostLogWarning(MessageText);
+end;
+
+// AviUtl2のerrorログへエンコード失敗を出す。
+procedure LogError(const MessageText: string);
+begin
+  OutputHostLogError(MessageText);
+end;
+
+// SDKからログハンドルを受け取り、以後の出力処理で利用する。
+procedure InitializeLogger(Logger: PLogHandle); cdecl;
+begin
+  InitializeOutputHostLogger(Logger);
+  LogInfo('VW Media Output: ログ連携を初期化しました。');
+end;
+
+// 出力開始ログへ載せる映像・音声設定の要約を作る。
+function OutputStartLogText(oip: POutputInfo; const Settings: TOutputTestSettings): string;
+var
+  AudioText: string;
+  FrameRate: Double;
+begin
+  if Settings.Audio.Enabled and ((oip^.flag and OUTPUT_INFO_FLAG_AUDIO) <> 0) then
+    AudioText := Format('%s %d kbps',
+      [Settings.Audio.CodecName, Settings.Audio.BitRate div 1000])
+  else
+    AudioText := '音声なし';
+  if oip^.scale > 0 then
+    FrameRate := oip^.rate / oip^.scale
+  else
+    FrameRate := 0;
+  Result := Format('VW Media Output: 出力開始: %s | %s / %s (%s) / %dx%d / %.3f fps / %s',
+    [ExtractFileName(Settings.SaveFileName), Settings.Container, Settings.Video.CodecName,
+     string(Settings.Video.EncoderName), oip^.w, oip^.h, FrameRate, AudioText]);
+end;
+
+// 出力モードによる拡張子補正後の実ファイル名を返す。
+function EffectiveOutputFileName(const Settings: TOutputTestSettings): string;
+begin
+  Result := Settings.SaveFileName;
+  if (Settings.EncodeMode = oemAlphaProRes) and
+    not SameText(ExtractFileExt(Result), '.mov') then
+    Result := ChangeFileExt(Result, '.mov');
+end;
+
+// 出力完了ログへ載せる時間、平均fps、ファイルサイズを作る。
+function OutputCompleteLogText(oip: POutputInfo; const Settings: TOutputTestSettings;
+  const Stopwatch: TStopwatch): string;
+var
+  AverageFps: Double;
+  ElapsedSeconds: Double;
+  FileSizeBytes: Int64;
+  FileSizeText: string;
+  OutputFileName: string;
+begin
+  ElapsedSeconds := Stopwatch.Elapsed.TotalSeconds;
+  if ElapsedSeconds > 0 then
+    AverageFps := oip^.n / ElapsedSeconds
+  else
+    AverageFps := 0;
+  OutputFileName := EffectiveOutputFileName(Settings);
+  try
+    FileSizeBytes := TFile.GetSize(OutputFileName);
+    if FileSizeBytes >= Int64(1024) * 1024 * 1024 then
+      FileSizeText := Format('%.2f GB', [FileSizeBytes / (1024.0 * 1024 * 1024)])
+    else
+      FileSizeText := Format('%.1f MB', [FileSizeBytes / (1024.0 * 1024)]);
+  except
+    FileSizeText := 'サイズ取得不可';
+  end;
+  Result := Format('VW Media Output: 出力完了: %s | 処理時間 %.1f秒 / 平均 %.1f fps / %s',
+    [ExtractFileName(OutputFileName), ElapsedSeconds, AverageFps, FileSizeText]);
+end;
 
 // 現在設定を初期化し、INIがあれば安全に反映する。
 procedure EnsureCurrentSettings;
@@ -62,6 +148,7 @@ function func_output(oip: POutputInfo): Boolean; cdecl;
 var
   Settings: TOutputTestSettings;
   ErrorMessage: string;
+  OutputStopwatch: TStopwatch;
 begin
   try
     if oip = nil then
@@ -73,14 +160,26 @@ begin
     EnsureCurrentSettings;
     Settings := CurrentSettings;
     Settings.SaveFileName := string(oip^.savefile);
+    LogInfo(OutputStartLogText(oip, Settings));
+    OutputStopwatch := TStopwatch.StartNew;
 
     Result := ExportOutputInfo(oip, Settings, ErrorMessage);
+    OutputStopwatch.Stop;
     LoadOutputSettingsFromIni(CurrentSettings);
     if not Result and (ErrorMessage <> '') then
+    begin
+      LogError('VW Media Output: 出力失敗: ' + ErrorMessage);
       MessageBox(0, PChar(ErrorMessage), 'VW_Media_Output', MB_OK or MB_ICONERROR);
+    end
+    else if Result then
+      LogInfo(OutputCompleteLogText(oip, Settings, OutputStopwatch))
+    else
+      LogWarning('VW Media Output: 出力は完了しませんでした: ' +
+        ExtractFileName(Settings.SaveFileName));
   except
     on E: Exception do
     begin
+      LogError('VW Media Output: 例外: ' + E.ClassName + ': ' + E.Message);
       MessageBox(0, PChar(E.ClassName + ': ' + E.Message),
         'VW_Media_Output', MB_OK or MB_ICONERROR);
       Result := False;
@@ -144,7 +243,8 @@ begin
 end;
 
 exports
-  GetOutputPluginTable name 'GetOutputPluginTable';
+  GetOutputPluginTable name 'GetOutputPluginTable',
+  InitializeLogger name 'InitializeLogger';
 
 begin
 end.

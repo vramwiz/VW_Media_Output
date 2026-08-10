@@ -130,6 +130,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="Plugin_Output\FFmpegApi.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputConfig.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputEncoder.pas"/>
+        <DCCReference Include="Plugin_Output\FFmpegOutputHostLog.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputApiTypes.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputPerfLog.pas"/>
         <DCCReference Include="Plugin_Output\FFmpegOutputPreview.pas"/>

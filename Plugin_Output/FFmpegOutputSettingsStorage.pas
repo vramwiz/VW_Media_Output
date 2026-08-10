@@ -16,6 +16,8 @@ procedure SaveOutputSettingsToIni(const Settings: TOutputTestSettings);
 procedure SaveOutputCheckLogDisplayToIni(ShowCheckLogAfterEncode: Boolean);
 // プラグインDLLと同じフォルダに置くINIのパスを返す。
 function OutputSettingsIniPath: string;
+// 設定INIと同じフォルダに置く固定名のcheck logパスを返す。
+function OutputCheckLogPath: string;
 
 implementation
 
@@ -62,6 +64,13 @@ begin
   else
     Result := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) +
       'VW_Media_Output.ini';
+end;
+
+// 出力動画の保存先に依存しないcheck logパスを返す。
+function OutputCheckLogPath: string;
+begin
+  Result := IncludeTrailingPathDelimiter(ExtractFilePath(OutputSettingsIniPath)) +
+    'VW_Media_Output.check.log';
 end;
 
 // encoder種別をINIへ保存する安定名へ変換する。
