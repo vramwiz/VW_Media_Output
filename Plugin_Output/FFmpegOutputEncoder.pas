@@ -82,6 +82,11 @@ var
 begin
   if (oip = nil) or not Assigned(oip^.func_rest_time_disp) then
     Exit;
+  // SDK sampleどおりnowは処理中frame番号とし、totalそのものは渡さない。
+  if Total > 0 then
+    Current := Min(Max(Current, 0), Total - 1)
+  else
+    Current := 0;
   Tick := GetTickCount64;
   if (not Force) and (LastNotifyTick <> 0) and
     ((Tick - LastNotifyTick) < PROGRESS_NOTIFY_INTERVAL_MS) then
@@ -1005,6 +1010,8 @@ begin
       EffectiveSettings.Audio.Channels := oip^.audio_ch;
   end;
 
+  // SDK sampleと同じく、重い初期化へ入る前に最初の残り時間表示を要求する。
+  NotifyAviUtlProgress(oip, 0, oip^.n, LastProgressNotifyTick, True);
   LoadOutputApi;
   OriginalSaveFileName := Settings.SaveFileName;
   if OriginalSaveFileName = '' then
@@ -1203,6 +1210,8 @@ begin
     for FrameIndex := 0 to oip^.n - 1 do
     begin
       FrameStopwatch := TStopwatch.StartNew;
+      // SDK sampleの順序に合わせ、frame取得前に進捗通知と中断確認を行う。
+      NotifyAviUtlProgress(oip, FrameIndex, oip^.n, LastProgressNotifyTick, True);
       if OutputAbortRequested(oip) then
       begin
         CurrentAborted := True;
@@ -1330,11 +1339,12 @@ begin
         end;
       end;
 
-      NotifyAviUtlProgress(oip, FrameIndex + 1, oip^.n, LastProgressNotifyTick, True);
       if Assigned(OnProgress) then
         OnProgress(FrameIndex + 1, oip^.n, CurrentFps, AverageFps, MinFps, MaxFps);
       if PerfLogger <> nil then
         PerfLogger.LogFrame(FrameIndex + 1, oip^.n, StopwatchElapsedMs(FrameStopwatch), AverageFps);
+      if PreviewWindow <> nil then
+        PreviewWindow.ProcessPendingMessages;
     end;
 
     if PerfLogger <> nil then
@@ -1447,8 +1457,6 @@ begin
     end
     else
     begin
-      if PreviewWindow <> nil then
-        PreviewWindow.UpdateStatus('完了しました。');
       PerfStatus := 'ok';
       Result := True;
     end;

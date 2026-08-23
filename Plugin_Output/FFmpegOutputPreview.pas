@@ -26,6 +26,7 @@ type
       ShowCheckLogAfterEncode: Boolean);
     destructor Destroy; override;
     procedure UpdateFrame(FrameIndex: Integer; FrameData: Pointer);
+    procedure ProcessPendingMessages;
     procedure UpdateStatus(const Text: string);
     procedure Close;
   private
@@ -41,6 +42,7 @@ type
     FEncodeDescription : string;                 // check logへ記録するエンコード設定説明
     FLastTick          : UInt64;                 // 前回プレビュー表示を更新したtick
     FLastBringForwardTick : UInt64;              // 前回プレビューを前面へ寄せたtick
+    FPendingUiUpdate   : Boolean;                // 入力frame解放後にmessage処理が必要か
     FForm              : TObject;                // 実体のTFormを遅延参照する枠
     FImage             : TObject;                // 実体のTImageを遅延参照する枠
     FPreviewPanel      : TObject;                // 実体のプレビュー配置用TPanelを遅延参照する枠
@@ -211,6 +213,7 @@ begin
     FDurationMs := (Int64(FTotalFrames) * FScale * 1000) div FRate;
   FLastTick := 0;
   FLastBringForwardTick := 0;
+  FPendingUiUpdate := False;
   FSwsContext := nil;
   FLogWriter := nil;
   FCautionCount := 0;
@@ -812,6 +815,15 @@ begin
 
   Image := TImage(FImage);
   Image.Picture.Assign(TBitmap(FBitmap));
+  FPendingUiUpdate := True;
+end;
+
+// AviUtl2の入力frameを使い終えた後にだけプレビューのmessageを処理する。
+procedure TOutputPreviewWindow.ProcessPendingMessages;
+begin
+  if not FPendingUiUpdate then
+    Exit;
+  FPendingUiUpdate := False;
   BringWindowForward(False);
   Application.ProcessMessages;
 end;
